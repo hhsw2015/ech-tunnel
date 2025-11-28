@@ -66,7 +66,7 @@ jobs:
         with:
           go-version: '1.21'
           cache: true
-          cache-dependency-path: server/go.sum
+          cache-dependency-path: go.sum
       
       - name: Get version info
         id: version
@@ -82,7 +82,6 @@ jobs:
           echo "git_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
       
       - name: Build binary
-        working-directory: server
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.os }}
@@ -113,8 +112,8 @@ jobs:
         with:
           name: ech-tunnel-${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            server/dist/ech-tunnel-*
-            server/dist/*.sha256
+            dist/ech-tunnel-*
+            dist/*.sha256
           retention-days: 7
   
   release:
@@ -178,7 +177,7 @@ jobs:
           
           ### 📖 使用文档
           
-          详见 [README.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/server/README.md)
+          详见 [README.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md)
           
           ---
           
