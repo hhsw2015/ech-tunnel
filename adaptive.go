@@ -27,20 +27,23 @@ type ViolentCongestionController struct {
 	lastAckTime time.Time     // 最后一次收到 ACK 的时间
 	rtt         time.Duration // 平滑的往返时延
 	rttVar      time.Duration // RTT 变化量
+
+	// 阻塞控制
+	cond *sync.Cond
 }
 
 // NewViolentCongestionController 创建新的拥塞控制器
 func NewViolentCongestionController() *ViolentCongestionController {
 	const (
-		initialWindow = 1 * 1024 * 1024  // 初始窗口 1MB (标准TCP约为10个MSS=14KB)
+		initialWindow = 1 * 1024 * 1024  // 初始窗口 1MB
 		minWindow     = 256 * 1024       // 最小窗口 256KB
 		maxWindow     = 64 * 1024 * 1024 // 最大窗口 64MB
 		ssthresh      = 10 * 1024 * 1024 // 慢启动阈值 10MB
-		growthRate    = 64 * 1024        // 每次 ACK 增长 64KB
-		backoffFactor = 0.9              // 丢包时降至 90% (标准TCP为50%)
+		growthRate    = 128 * 1024       // 每次 ACK 增长 128KB (更加激进)
+		backoffFactor = 0.95             // 丢包时降至 95% (几乎不退让)
 	)
 
-	return &ViolentCongestionController{
+	c := &ViolentCongestionController{
 		cwnd:          initialWindow,
 		ssthresh:      ssthresh,
 		minWindow:     minWindow,
@@ -49,17 +52,23 @@ func NewViolentCongestionController() *ViolentCongestionController {
 		backoffFactor: backoffFactor,
 		lastAckTime:   time.Now(),
 	}
+	c.cond = sync.NewCond(&c.mu)
+	return c
 }
 
-// CanSend 检查是否可以发送指定大小的数据
-// 激进模式：允许超出窗口 20% 的突发流量
-func (c *ViolentCongestionController) CanSend(bytes int) bool {
+// WaitWindow 阻塞直到有足够的窗口发送数据
+func (c *ViolentCongestionController) WaitWindow(bytes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 允许 1.2 倍窗口的超发，提高突发性能
-	limit := int(float64(c.cwnd) * 1.2)
-	return c.inFlight+bytes <= limit
+	for {
+		// 允许 1.5 倍窗口的超发 (极度激进)
+		limit := int(float64(c.cwnd) * 1.5)
+		if c.inFlight+bytes <= limit {
+			return
+		}
+		c.cond.Wait()
+	}
 }
 
 // OnDataSent 记录数据已发送，更新 inflight 计数
@@ -70,7 +79,6 @@ func (c *ViolentCongestionController) OnDataSent(bytes int) {
 }
 
 // OnAck 处理收到的 ACK，更新窗口和 RTT
-// 这是拥塞控制的核心逻辑
 func (c *ViolentCongestionController) OnAck(bytes int, rtt time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -83,49 +91,46 @@ func (c *ViolentCongestionController) OnAck(bytes int, rtt time.Duration) {
 
 	// 更新 RTT 估计值 (使用加权移动平均, EWMA)
 	if c.rtt == 0 {
-		// 首次测量
 		c.rtt = rtt
 		c.rttVar = rtt / 2
 	} else {
-		// RFC 6298: RTT variance 计算
 		diff := c.rtt - rtt
 		if diff < 0 {
 			diff = -diff
 		}
-		// rttVar = 0.75 * rttVar + 0.25 * |rtt - sample|
 		c.rttVar = time.Duration(float64(c.rttVar)*0.75 + float64(diff)*0.25)
-		// rtt = 0.875 * rtt + 0.125 * sample
 		c.rtt = time.Duration(float64(c.rtt)*0.875 + float64(rtt)*0.125)
 	}
 
-	// 激进增长策略：收到 ACK 就增长，不区分慢启动和拥塞避免
-	// 采用固定步长的加性增长 (Additive Increase)
+	// 激进增长：只要有 ACK 就增长
 	c.cwnd += c.growthRate
 
-	// 限制最大窗口，防止无限增长
+	// 限制最大窗口
 	if c.cwnd > c.maxWindow {
 		c.cwnd = c.maxWindow
 	}
 
 	c.lastAckTime = time.Now()
+
+	// 唤醒等待的发送者
+	c.cond.Signal()
 }
 
 // OnLoss 处理丢包或超时事件
-// 激进模式：仅轻微降低窗口，保持高速传输
 func (c *ViolentCongestionController) OnLoss() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 激进回退：仅降至原来的 90% (标准 TCP 会降至 50%)
+	// 激进回退
 	c.cwnd = int(float64(c.cwnd) * c.backoffFactor)
 
-	// 确保不低于最小窗口
 	if c.cwnd < c.minWindow {
 		c.cwnd = c.minWindow
 	}
-
-	// 更新慢启动阈值为当前窗口大小
 	c.ssthresh = c.cwnd
+
+	// 即使回退也尝试唤醒，防止死锁
+	c.cond.Signal()
 }
 
 // GetStats 获取状态

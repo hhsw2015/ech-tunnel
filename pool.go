@@ -251,13 +251,20 @@ func (p *ECHPool) handleChannel(channelID int, wsConn *websocket.Conn) {
 				continue
 			}
 
-			// 支持二进制多路复用：DATA:<id>|<payload>
+			// 支持二进制多路复用：DATA:<id>|<seq>|<payload>
 			if len(msg) > 5 && string(msg[:5]) == "DATA:" {
 				s := string(msg)
-				parts := strings.SplitN(s[5:], "|", 2)
-				if len(parts) == 2 {
+				parts := strings.SplitN(s[5:], "|", 3)
+				if len(parts) == 3 {
 					id := parts[0]
-					payload := parts[1]
+					seq := parts[1]
+					payload := parts[2]
+
+					// 立即发送 ACK
+					p.wsMutexes[channelID].Lock()
+					_ = wsConn.WriteMessage(websocket.TextMessage, []byte("ACK:"+id+"|"+seq))
+					p.wsMutexes[channelID].Unlock()
+
 					p.mu.RLock()
 					c := p.tcpMap[id]
 					p.mu.RUnlock()

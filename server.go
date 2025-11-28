@@ -379,6 +379,24 @@ func handleWebSocket(wsConn *websocket.Conn) {
 				}
 			}
 			continue
+		} else if strings.HasPrefix(data, "ACK:") {
+			parts := strings.SplitN(data[4:], "|", 2)
+			if len(parts) == 2 {
+				connID := parts[0]
+				var seq int64
+				fmt.Sscanf(parts[1], "%d", &seq)
+
+				ackChansMu.RLock()
+				ch, ok := ackChans[connID]
+				ackChansMu.RUnlock()
+				if ok {
+					select {
+					case ch <- seq:
+					default:
+					}
+				}
+			}
+			continue
 		} else if strings.HasPrefix(data, "CLOSE:") {
 			id := strings.TrimPrefix(data, "CLOSE:")
 			connMu.Lock()
@@ -393,6 +411,12 @@ func handleWebSocket(wsConn *websocket.Conn) {
 		}
 	}
 }
+
+// ======================== ACK 分发机制 ========================
+var (
+	ackChansMu sync.RWMutex
+	ackChans   = make(map[string]chan int64)
+)
 
 // ======================== 独立的 TCP 连接处理函数（监听 context） ========================
 func handleTCPConnection(
@@ -414,12 +438,9 @@ func handleTCPConnection(
 
 	// 性能优化: 设置TCP参数
 	if tcpConnReal, ok := tcpConn.(*net.TCPConn); ok {
-		// 禁用Nagle算法,降低延迟
 		_ = tcpConnReal.SetNoDelay(true)
-		// 启用TCP Keep-Alive,提升连接稳定性
 		_ = tcpConnReal.SetKeepAlive(true)
 		_ = tcpConnReal.SetKeepAlivePeriod(30 * time.Second)
-		// 设置缓冲区大小
 		_ = tcpConnReal.SetReadBuffer(1048576)  // 1MB
 		_ = tcpConnReal.SetWriteBuffer(1048576) // 1MB
 	}
@@ -429,8 +450,21 @@ func handleTCPConnection(
 	conns[connID] = tcpConn
 	connMu.Unlock()
 
+	// 初始化拥塞控制器
+	controller := NewViolentCongestionController()
+
+	// 注册 ACK 通道
+	ackChan := make(chan int64, 1000)
+	ackChansMu.Lock()
+	ackChans[connID] = ackChan
+	ackChansMu.Unlock()
+
 	// 确保退出时清理
 	defer func() {
+		ackChansMu.Lock()
+		delete(ackChans, connID)
+		ackChansMu.Unlock()
+
 		_ = tcpConn.Close()
 		connMu.Lock()
 		delete(conns, connID)
@@ -438,7 +472,38 @@ func handleTCPConnection(
 		log.Printf("[服务端] TCP连接已清理: %s", connID)
 	}()
 
-	// 发送第一帧
+	// 启动 ACK 消费者
+	type packetInfo struct {
+		sentTime time.Time
+		size     int
+	}
+	pendingPackets := make(map[int64]packetInfo)
+	var pendingMu sync.Mutex
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case seq, ok := <-ackChan:
+				if !ok {
+					return
+				}
+				pendingMu.Lock()
+				if info, exists := pendingPackets[seq]; exists {
+					delete(pendingPackets, seq)
+					pendingMu.Unlock()
+
+					rtt := time.Since(info.sentTime)
+					controller.OnAck(info.size, rtt)
+				} else {
+					pendingMu.Unlock()
+				}
+			}
+		}
+	}()
+
+	// 发送第一帧 (不计入拥塞控制，简化处理)
 	if firstFrameData != "" {
 		if _, err := tcpConn.Write([]byte(firstFrameData)); err != nil {
 			log.Printf("[服务端] 发送第一帧失败: %v", err)
@@ -461,26 +526,21 @@ func handleTCPConnection(
 
 		// 集成自适应监控
 		monitor := NewAdaptiveMonitor()
-
-		// 性能优化: 预分配协议头缓冲区
-		headerPrefix := []byte("DATA:" + connID + "|")
+		var seq int64 = 0
 
 		for {
 			select {
 			case <-ctx.Done():
-				// WebSocket 已关闭，强制关闭 TCP 连接
 				log.Printf("[服务端] WebSocket 已关闭，强制关闭 TCP 连接: %s", connID)
 				_ = tcpConn.Close()
 				return
 			default:
 			}
 
-			// 性能优化: 使用更长的超时时间减少CPU占用
 			_ = tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-			// 自适应调整缓冲区大小 (现在固定为 1MB)
+			// 自适应调整缓冲区大小
 			currentBufSize := monitor.GetBufferSize()
-			// 从内存池获取缓冲区
 			var buf []byte
 			var bufPtr *[]byte
 
@@ -500,7 +560,7 @@ func handleTCPConnection(
 
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue // 超时继续循环，检查 ctx
+					continue
 				}
 				if !isNormalCloseError(err) {
 					log.Printf("[服务端] 从目标读取失败: %v", err)
@@ -511,13 +571,28 @@ func handleTCPConnection(
 				return
 			}
 
-			// 更新监控数据
 			monitor.Update(n)
 
-			// 性能优化: 复用缓冲区,减少内存分配
-			message := make([]byte, len(headerPrefix)+n)
-			copy(message, headerPrefix)
-			copy(message[len(headerPrefix):], buf[:n])
+			// === 拥塞控制: 等待窗口 ===
+			controller.WaitWindow(n)
+
+			seq++
+			currentSeq := seq
+
+			// 构造带序列号的消息: DATA:connID|seq|payload
+			header := fmt.Sprintf("DATA:%s|%d|", connID, currentSeq)
+			headerBytes := []byte(header)
+
+			message := make([]byte, len(headerBytes)+n)
+			copy(message, headerBytes)
+			copy(message[len(headerBytes):], buf[:n])
+
+			// 记录发送时间
+			pendingMu.Lock()
+			pendingPackets[currentSeq] = packetInfo{sentTime: time.Now(), size: n}
+			pendingMu.Unlock()
+
+			controller.OnDataSent(n)
 
 			mu.Lock()
 			writeErr := wsConn.WriteMessage(websocket.BinaryMessage, message)
@@ -532,6 +607,5 @@ func handleTCPConnection(
 		}
 	}()
 
-	// 等待读取 goroutine 结束
 	<-done
 }
