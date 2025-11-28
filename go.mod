@@ -1,4 +1,4 @@
-module ech_tunnel
+module ech-tunnel
 
 go 1.25.4
 
