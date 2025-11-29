@@ -1,19 +1,17 @@
 name: Go Cross Build & Release
 
-# 改成手动触发，需要输入版本号
 on:
   workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g. v1.5.0)'
         required: true
-        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write           # 必须加这行才能创建 Release
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -32,41 +30,38 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # 关键改动 1：每个 job 都用独立目录
       - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          mkdir -p build/bin
+          mkdir -p dist/${{ matrix.goos }}-${{ matrix.goarch }}
           if [ "$GOOS" = "windows" ]; then
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
+            go build -o dist/${{ matrix.goos }}-${{ matrix.goarch }}/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
           else
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
+            go build -o dist/${{ matrix.goos }}-${{ matrix.goarch }}/ech-tunnel-${GOOS}-${GOARCH} ./...
           fi
 
 
-      # 新增：只让一个 job（linux/amd64）负责创建 Release 并上传全部 6 个文件
-      - name: Create Release & Upload All Binaries
+
+      # 关键改动 3：只由一个 job 统一创建 Release 并上传全部
+      - name: Create Release & Upload All
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
 
-          # 如果同名 Release 已存在就删掉（避免重复运行失败）
           gh release delete "$VERSION" --yes || true
+          gh release create "$VERSION" --title="$VERSION" --notes="All 6 platforms"
 
-          # 创建 Release
-          gh release create "$VERSION" \
-            --title="$VERSION" \
-            --notes="Automated build: linux/windows/darwin (amd64 + arm64)"
+          # 上传所有 dist 目录下的文件（不再覆盖！）
+          echo "Uploading all 6 binaries..."
+          gh release upload "$VERSION" dist/**/*.exe dist/**/ech-tunnel-* --clobber
 
-          # 上传所有生成的二进制（通配符一次上传全部）
-          echo "Uploading all binaries to release $VERSION ..."
-          gh release upload "$VERSION" build/bin/* --clobber
-
-          # 可选：顺手生成并上传 SHA256 校验文件
-          cd build/bin
-          sha256sum * > SHA256SUMS.txt
-          gh release upload "$VERSION" SHA256SUMS.txt --clobber
+          # 生成并上传校验文件
+          cd dist
+          find . -type f -exec sha256sum {} \; | sort > ../SHA256SUMS.txt
+          gh release upload "$VERSION" ../SHA256SUMS.txt --clobber
