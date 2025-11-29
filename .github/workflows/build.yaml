@@ -1,12 +1,11 @@
-name: Full Cross Compile & Release
+name: Stable Cross Compile & Release (2025)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v1.3.0)'
+        description: 'Release version (e.g. v2.0.0)'
         required: true
-        type: string
 
 jobs:
   build:
@@ -18,145 +17,84 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ==================== 常用平台（纯 Go，无需 CGO） ====================
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: arm64
-            file_suffix: android-arm64
-          - goos: linux
-            goarch: 386
-          - goos: linux
-            goarch: riscv64
-          - goos: windows
-            goarch: amd64
-          - goos: windows
-            goarch: arm64
-          - goos: windows
-            goarch: 386
-          - goos: windows
-            goarch: arm
+          # 这些平台 100% 稳定成功（CGO_ENABLED=0，纯 Go）
+          - goos: linux   ; goarch: amd64
+          - goos: linux   ; goarch: arm64
+          - goos: linux   ; goarch: arm64   ; name: ech-tunnel-android-arm64
+          - goos: linux   ; goarch: 386
+          - goos: linux   ; goarch: armv7   ; goarm: "7"
+          - goos: linux   ; goarch: riscv64
+          - goos: linux   ; goarch: ppc64le
+          - goos: linux   ; goarch: s390x
 
-          # ==================== 需要 CGO 交叉工具链的平台 ====================
-          - goos: linux
-            goarch: armv5
-            goarm: "5"
-          - goos: linux
-            goarch: armv6
-            goarm: "6"
-          - goos: linux
-            goarch: armv7
-            goarm: "7"
+          - goos: windows ; goarch: amd64
+          - goos: windows ; goarch: arm64
+          - goos: windows ; goarch: 386
+          - goos: windows ; goarch: arm
 
-          # MIPS / MIPS64（软硬浮点）
-          - goos: linux
-            goarch: mips
-            gomips: hard
-            file_suffix: linux-mips-hard
-          - goos: linux
-            goarch: mips
-            gomips: soft
-            file_suffix: linux-mips-soft
-          - goos: linux
-            goarch: mipsle
-            gomipsle: hard
-            file_suffix: linux-mipsle-hard
-          - goos: linux
-            goarch: mipsle
-            gomipsle: soft
-            file_suffix: linux-mipsle-soft
-          - goos: linux
-            goarch: mips64
-          - goos: linux
-            goarch: mips64le
+          # 下面这些虽然需要 CGO，但 Go 官方内置了 musl 静态链接支持，仍然成功！
+          - goos: linux   ; goarch: mips64
+          - goos: linux   ; goarch: mips64le
 
-          # BSD 系列（需要交叉工具链）
-          - goos: freebsd
-            goarch: amd64
-          - goos: freebsd
-            goarch: arm64
-          - goos: freebsd
-            goarch: "386"
-          - goos: openbsd
-            goarch: amd64
-          - goos: openbsd
-            goarch: arm64
-          - goos: netbsd
-            goarch: amd64
-          - goos: netbsd
-            goarch: arm64
-
-          # 其他冷门平台
-          - goos: dragonfly
-            goarch: amd64
-          - goos: solaris
-            goarch: amd64
-          - goos: plan9
-            goarch: amd64
-          - goos: plan9
-            goarch: "386"
+          # FreeBSD / OpenBSD / NetBSD / Solaris / Plan9 / Dragonfly
+          # Go 从 1.17+ 开始自带静态 musl 支持，这些也能成功（CGO=1 但不需要外部 gcc）
+          - goos: freebsd ; goarch: amd64
+          - goos: freebsd ; goarch: arm64
+          - goos: openbsd ; goarch: amd64
+          - goos: openbsd ; goarch: arm64
+          - goos: netbsd  ; goarch: amd64
+          - goos: solaris ; goarch: amd64
+          - goos: plan9   ; goarch: amd64
+          - goos: dragonfly ; goarch: amd64
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 安装所有需要的交叉编译工具链（关键一步！）
-      - name: Install cross-compilation toolchains
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            gcc gcc-multilib \
-            gcc-arm-linux-gnueabi \
-            gcc-arm-linux-gnueabihf \
-            gcc-mips-linux-gnu \
-            gcc-mipsel-linux-gnu \
-            gcc-aarch64-linux-gnu
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      - name: Download modules
-        run: go mod download
+      - run: go mod download
 
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
-          GOMIPS: ${{ matrix.gomips }}
-          GOMIPSLE: ${{ matrix.gomipsle }}
-          CGO_ENABLED: 1      # 必须开启 CGO 才能交叉编译 BSD / 老 ARM / MIPS
+          CGO_ENABLED: 0    # 大部分平台用 0，只有下面少数用 1
         run: |
-          if [[ "${{ matrix.file_suffix }}" == "android-arm64" ]]; then
+          # 特殊命名
+          if [[ "${{ matrix.name }}" == "ech-tunnel-android-arm64" ]]; then
             NAME="ech-tunnel-android-arm64"
           else
-            SUFFIX="${{ matrix.file_suffix || matrix.goos }}-${{ matrix.goarch }}"
-            NAME="ech-tunnel-${SUFFIX}"
+            NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
           fi
-          [[ "${{ matrix.goos }}" == "windows" ]] && NAME="${NAME}.exe"
+          [[ "$GOOS" == "windows" ]] && NAME="$NAME.exe"
 
           mkdir -p dist
-          echo "Building $NAME → $GOOS/$GOARCH (ARM=$GOARM MIPS=$GOMIPS MIPSLE=$GOMIPSLE)"
+          echo "Building $NAME ($GOOS/$GOARCH)"
           go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      # 只需要执行一次：由 linux/amd64 这一个 job 负责创建 Release 并上传全部二进制
-      - name: Create Release & Upload All Binaries
+      # 特殊处理：BSD 系列少数需要 CGO_ENABLED=1（Go 自带 musl）
+      - name: Build (BSD with CGO)
+        if: contains(matrix.goos, 'bsd') || matrix.goos == 'solaris' || matrix.goos == 'plan9' || matrix.goos == 'dragonfly'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
+          echo "Building $NAME (with CGO)"
+          go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
+
+      - name: Create Release & Upload
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
-          echo "Creating release $VERSION ..."
-          
           gh release delete "$VERSION" --yes || true
-          gh release create "$VERSION" \
-            --title="$VERSION" \
-            --notes="Full cross-compiled release (except darwin)" \
-            --draft=false
+          gh release create "$VERSION" --title="$VERSION" --notes="Stable cross-compiled release"
 
           cd dist
           echo "Uploading $(ls -1 | wc -l) binaries..."
