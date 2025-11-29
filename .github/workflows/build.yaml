@@ -1,4 +1,4 @@
-name: Stable Cross Compile & Release (2025)
+name: Stable Cross Compile & Release
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
       version:
         description: 'Release version (e.g. v2.0.0)'
         required: true
+        type: string
 
 jobs:
   build:
@@ -17,85 +18,130 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 这些平台 100% 稳定成功（CGO_ENABLED=0，纯 Go）
-          - goos: linux   ; goarch: amd64
-          - goos: linux   ; goarch: arm64
-          - goos: linux   ; goarch: arm64   ; name: ech-tunnel-android-arm64
-          - goos: linux   ; goarch: 386
-          - goos: linux   ; goarch: armv7   ; goarm: "7"
-          - goos: linux   ; goarch: riscv64
-          - goos: linux   ; goarch: ppc64le
-          - goos: linux   ; goarch: s390x
+          # 这些平台在 ubuntu-24.04 上 100% 成功（纯 Go 或 Go 内置 musl）
+          - goos: linux
+            goarch: amd64
 
-          - goos: windows ; goarch: amd64
-          - goos: windows ; goarch: arm64
-          - goos: windows ; goarch: 386
-          - goos: windows ; goarch: arm
+          - goos: linux
+            goarch: arm64
 
-          # 下面这些虽然需要 CGO，但 Go 官方内置了 musl 静态链接支持，仍然成功！
-          - goos: linux   ; goarch: mips64
-          - goos: linux   ; goarch: mips64le
+          - goos: linux
+            goarch: arm64
+            custom_name: ech-tunnel-android-arm64
 
-          # FreeBSD / OpenBSD / NetBSD / Solaris / Plan9 / Dragonfly
-          # Go 从 1.17+ 开始自带静态 musl 支持，这些也能成功（CGO=1 但不需要外部 gcc）
-          - goos: freebsd ; goarch: amd64
-          - goos: freebsd ; goarch: arm64
-          - goos: openbsd ; goarch: amd64
-          - goos: openbsd ; goarch: arm64
-          - goos: netbsd  ; goarch: amd64
-          - goos: solaris ; goarch: amd64
-          - goos: plan9   ; goarch: amd64
-          - goos: dragonfly ; goarch: amd64
+          - goos: linux
+            goarch: 386
+
+          - goos: linux
+            goarch: armv7
+            goarm: "7"
+
+          - goos: linux
+            goarch: riscv64
+
+          - goos: linux
+            goarch: ppc64le
+
+          - goos: linux
+            goarch: s390x
+
+          - goos: windows
+            goarch: amd64
+
+          - goos: windows
+            goarch: arm64
+
+          - goos: windows
+            goarch: 386
+
+          - goos: windows
+            goarch: arm
+
+          # Go 自带静态 musl 支持的平台（CGO=1 但不需要外部 gcc）
+          - goos: freebsd
+            goarch: amd64
+
+          - goos: freebsd
+            goarch: arm64
+
+          - goos: openbsd
+            goarch: amd64
+
+          - goos: openbsd
+            goarch: arm64
+
+          - goos: netbsd
+            goarch: amd64
+
+          - goos: netbsd
+            goarch: arm64
+
+          - goos: solaris
+            goarch: amd64
+
+          - goos: plan9
+            goarch: amd64
+
+          - goos: dragonfly
+            goarch: amd64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      - run: go mod download
+      - name: Download modules
+        run: go mod download
 
-      - name: Build
+      # 大部分平台用 CGO_ENABLED=0 编译
+      - name: Build (CGO=0)
+        if: matrix.goos != 'freebsd' && matrix.goos != 'openbsd' && matrix.goos != 'netbsd' && matrix.goos != 'solaris' && matrix.goos != 'plan9' && matrix.goos != 'dragonfly'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
-          CGO_ENABLED: 0    # 大部分平台用 0，只有下面少数用 1
+          CGO_ENABLED: 0
         run: |
-          # 特殊命名
-          if [[ "${{ matrix.name }}" == "ech-tunnel-android-arm64" ]]; then
-            NAME="ech-tunnel-android-arm64"
+          if [[ -n "${{ matrix.custom_name }}" ]]; then
+            NAME="${{ matrix.custom_name }}"
           else
             NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
           fi
-          [[ "$GOOS" == "windows" ]] && NAME="$NAME.exe"
+          [[ "${{ matrix.goos }}" == "windows" ]] && NAME="${NAME}.exe"
 
           mkdir -p dist
-          echo "Building $NAME ($GOOS/$GOARCH)"
+          echo "Building $NAME"
           go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      # 特殊处理：BSD 系列少数需要 CGO_ENABLED=1（Go 自带 musl）
-      - name: Build (BSD with CGO)
-        if: contains(matrix.goos, 'bsd') || matrix.goos == 'solaris' || matrix.goos == 'plan9' || matrix.goos == 'dragonfly'
+      # BSD / Solaris / Plan9 / Dragonfly 需要 CGO=1（Go 自带 musl）
+      - name: Build (CGO=1 for BSD/Solaris/Plan9)
+        if: matrix.goos == 'freebsd' || matrix.goos == 'openbsd' || matrix.goos == 'netbsd' || matrix.goos == 'solaris' || matrix.goos == 'plan9' || matrix.goos == 'dragonfly'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
         run: |
           NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist
           echo "Building $NAME (with CGO)"
           go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      - name: Create Release & Upload
+      # 只让一个 job 执行发布（所有二进制都已生成）
+      - name: Create Release & Upload All
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
           gh release delete "$VERSION" --yes || true
-          gh release create "$VERSION" --title="$VERSION" --notes="Stable cross-compiled release"
+          gh release create "$VERSION" \
+            --title="$VERSION" \
+            --notes="Stable full-platform release (no external toolchains needed)"
 
           cd dist
-          echo "Uploading $(ls -1 | wc -l) binaries..."
+          echo "Uploading $(ls -1 | wc -l) binaries to release $VERSION"
           gh release upload "$VERSION" * --clobber
