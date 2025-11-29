@@ -1,10 +1,11 @@
-name: Stable Cross Compile & Release
+name: Go Cross Build & Release
 
+# 改成手动触发，需要输入版本号
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v2.0.0)'
+        description: 'Release version (e.g. v1.5.0)'
         required: true
         type: string
 
@@ -12,134 +13,60 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-
+      contents: write           # 必须加这行才能创建 Release
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-
-          - goos: linux
-            goarch: arm64
-
-          - goos: linux
-            goarch: arm64
-            custom_name: ech-tunnel-android-arm64
-
-          - goos: linux
-            goarch: 386
-
-          - goos: linux
-            goarch: arm
-            goarm: "7"
-
-          - goos: linux
-            goarch: riscv64
-
-          - goos: linux
-            goarch: ppc64le
-
-          - goos: linux
-            goarch: s390x
-
-          - goos: windows
-            goarch: amd64
-
-          - goos: windows
-            goarch: arm64
-
-          - goos: windows
-            goarch: 386
-
-          - goos: windows
-            goarch: arm
-
-          - goos: freebsd
-            goarch: amd64
-
-          - goos: freebsd
-            goarch: arm64
-
-          - goos: openbsd
-            goarch: amd64
-
-          - goos: openbsd
-            goarch: arm64
-
-          - goos: netbsd
-            goarch: amd64
-
-          - goos: netbsd
-            goarch: arm64
-
-          - goos: solaris
-            goarch: amd64
-
-          - goos: plan9
-            goarch: amd64
-
-          - goos: dragonfly
-            goarch: amd64
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      - name: Download modules
+      - name: Download dependencies
         run: go mod download
 
-      - name: Build (CGO=0)
-        if: matrix.goos != 'freebsd' && matrix.goos != 'openbsd' && matrix.goos != 'netbsd' && matrix.goos != 'solaris' && matrix.goos != 'plan9' && matrix.goos != 'dragonfly'
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: 0
         run: |
-          if [[ -n "${{ matrix.custom_name }}" ]]; then
-            NAME="${{ matrix.custom_name }}"
+          mkdir -p build/bin
+          if [ "$GOOS" = "windows" ]; then
+            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
           else
-            NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
-            [[ -n "${{ matrix.goarm }}" ]] && NAME="${NAME}_armv${{ matrix.goarm }}"
+            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
           fi
-          [[ "${{ matrix.goos }}" == "windows" ]] && NAME="${NAME}.exe"
 
-          mkdir -p dist
-          echo "Building $NAME"
-          go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      - name: Build (CGO=1 for BSD/Solaris/Plan9/Dragonfly)
-        if: matrix.goos == 'freebsd' || matrix.goos == 'openbsd' || matrix.goos == 'netbsd' || matrix.goos == 'solaris' || matrix.goos == 'plan9' || matrix.goos == 'dragonfly'
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
-        run: |
-          NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
-          mkdir -p dist
-          echo "Building $NAME (with CGO)"
-          go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
-
-      - name: Create Release & Upload + SHA256
+      # 新增：只让一个 job（linux/amd64）负责创建 Release 并上传全部 6 个文件
+      - name: Create Release & Upload All Binaries
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
+
+          # 如果同名 Release 已存在就删掉（避免重复运行失败）
           gh release delete "$VERSION" --yes || true
-          gh release create "$VERSION" --title="$VERSION" --notes="Full stable cross-compile release"
 
-          cd dist
-          echo "Uploading $(ls -1 | wc -l) binaries..."
-          gh release upload "$VERSION" * --clobber
+          # 创建 Release
+          gh release create "$VERSION" \
+            --title="$VERSION" \
+            --notes="Automated build: linux/windows/darwin (amd64 + arm64)"
 
-          # 生成并上传 SHA256 校验文件
-          sha256sum * > "ech-tunnel_${VERSION}_SHA256.txt"
-          gh release upload "$VERSION" "ech-tunnel_${VERSION}_SHA256.txt" --clobber
+          # 上传所有生成的二进制（通配符一次上传全部）
+          echo "Uploading all binaries to release $VERSION ..."
+          gh release upload "$VERSION" build/bin/* --clobber
+
+          # 可选：顺手生成并上传 SHA256 校验文件
+          cd build/bin
+          sha256sum * > SHA256SUMS.txt
+          gh release upload "$VERSION" SHA256SUMS.txt --clobber
