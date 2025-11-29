@@ -1,21 +1,117 @@
-name: Go Cross Build
+name: Manual Cross Build & Release
 
 on:
-  push:
-    branches:
-      - "*"
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v1.2.3)'
+        required: true
+        type: string
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # 必须要有，才能创建 Release 和上传资产
+
     strategy:
       fail-fast: false
       matrix:
         goos: [linux, windows, darwin]
         goarch: [amd64, arm64]
+        include:
+          - goos: linux
+            goarch: arm64
+            file_suffix: android-arm64
+
+          - goos: dragonfly
+            goarch: amd64
+
+          - goos: freebsd
+            goarch: "386"
+          - goos: freebsd
+            goarch: amd64
+          - goos: freebsd
+            goarch: arm
+          - goos: freebsd
+            goarch: arm64
+
+          - goos: linux
+            goarch: "386"
+          - goos: linux
+            goarch: armv5
+            goarm: "5"
+          - goos: linux
+            goarch: armv6
+            goarm: "6"
+          - goos: linux
+            goarch: armv7
+            goarm: "7"
+          - goos: linux
+            goarch: mips
+            gomips: hard
+            file_suffix: linux-mips-hard
+          - goos: linux
+            goarch: mips
+            gomips: soft
+            file_suffix: linux-mips-soft
+          - goos: linux
+            goarch: mipsle
+            gomipsle: hard
+            file_suffix: linux-mipsle-hard
+          - goos: linux
+            goarch: mipsle
+            gomipsle: soft
+            file_suffix: linux-mipsle-soft
+          - goos: linux
+            goarch: mips64
+          - goos: linux
+            goarch: mips64le
+          - goos: linux
+            goarch: ppc64
+          - goos: linux
+            goarch: ppc64le
+          - goos: linux
+            goarch: riscv64
+          - goos: linux
+            goarch: s390x
+
+          - goos: netbsd
+            goarch: "386"
+          - goos: netbsd
+            goarch: amd64
+          - goos: netbsd
+            goarch: arm
+          - goos: netbsd
+            goarch: arm64
+
+          - goos: openbsd
+            goarch: "386"
+          - goos: openbsd
+            goarch: amd64
+          - goos: openbsd
+            goarch: arm
+          - goos: openbsd
+            goarch: arm64
+
+          - goos: plan9
+            goarch: "386"
+          - goos: plan9
+            goarch: amd64
+
+          - goos: solaris
+            goarch: amd64
+
+          - goos: windows
+            goarch: "386"
+          - goos: windows
+            goarch: arm
+
+    env:
+      CGO_ENABLED: 0
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Go
@@ -26,22 +122,39 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+      - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          GOMIPSLE: ${{ matrix.gomipsle }}
         run: |
-          mkdir -p build/bin
-          if [ "$GOOS" = "windows" ]; then
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
+          SUFFIX="${{ matrix.file_suffix || matrix.goos }}-${{ matrix.goarch }}"
+          if [[ "${{ matrix.file_suffix }}" == "android-arm64" ]]; then
+            BIN="ech-tunnel-android-arm64"
           else
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
+            BIN="ech-tunnel-${SUFFIX}"
           fi
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build/bin/ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}*
-          if-no-files-found: error
+          [[ "${{ matrix.goos }}" == "windows" ]] && BIN="${BIN}.exe"
+
+          mkdir -p build/bin
+          echo "Building $BIN  ($GOOS/$GOARCH $GOARM $GOMIPS $GOMIPSLE)"
+          go build -trimpath -ldflags="-s -w" -o "build/bin/$BIN" .
+
+      - name: Create Release and Upload All Binaries
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # 如果 Release 已存在则删除（避免重复创建失败）
+          gh release delete "$VERSION" --yes || true
+          # 清理可能的残留资产
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "Manual release $VERSION - All platforms" \
+            --draft=false
+
+          echo "Uploading all binaries to release $VERSION ..."
+          gh release upload "$VERSION" build/bin/* --clobber
