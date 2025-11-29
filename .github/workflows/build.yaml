@@ -46,13 +46,6 @@ jobs:
             go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
           fi
 
-      # 你的原始 artifact 上传，保留
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build/bin/ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}*
-          if-no-files-found: error
 
       # 关键新增：每个 job 自己上传自己编译的文件！
       - name: Upload to Release
@@ -79,3 +72,4 @@ jobs:
           cd build/bin
           sha256sum ech-tunnel-* > SHA256SUMS.txt
           gh release upload "${{ inputs.version }}" SHA256SUMS.txt --clobber
+
