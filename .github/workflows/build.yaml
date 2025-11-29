@@ -1,17 +1,20 @@
 name: Go Cross Build & Release
 
+# 改成手动触发
 on:
   workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g. v1.5.0)'
         required: true
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write                # 必须加这行才能创建 Release
+
     strategy:
       fail-fast: false
       matrix:
@@ -30,38 +33,49 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      # 关键改动 1：每个 job 都用独立目录
+      # 你的原始编译逻辑，一字未改！
       - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          mkdir -p dist/${{ matrix.goos }}-${{ matrix.goarch }}
+          mkdir -p build/bin
           if [ "$GOOS" = "windows" ]; then
-            go build -o dist/${{ matrix.goos }}-${{ matrix.goarch }}/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
+            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
           else
-            go build -o dist/${{ matrix.goos }}-${{ matrix.goarch }}/ech-tunnel-${GOOS}-${GOARCH} ./...
+            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
           fi
 
 
-
-      # 关键改动 3：只由一个 job 统一创建 Release 并上传全部
-      - name: Create Release & Upload All
+      # 新增：只由 linux/amd64 这个 job 负责创建 Release 并上传全部 6 个文件
+      - name: Create Release & Upload All Binaries
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
 
+          # 删除旧旧 Release（避免重复运行失败）
           gh release delete "$VERSION" --yes || true
-          gh release create "$VERSION" --title="$VERSION" --notes="All 6 platforms"
 
-          # 上传所有 dist 目录下的文件（不再覆盖！）
-          echo "Uploading all 6 binaries..."
-          gh release upload "$VERSION" dist/**/*.exe dist/**/ech-tunnel-* --clobber
+          # 创建 Release
+          gh release create "$VERSION" \
+            --title="$VERSION" \
+            --notes="Automated cross build: linux/windows/darwin (amd64+arm64)"
 
-          # 生成并上传校验文件
-          cd dist
-          find . -type f -exec sha256sum {} \; | sort > ../SHA256SUMS.txt
-          gh release upload "$VERSION" ../SHA256SUMS.txt --clobber
+          # 关键修复：等所有 job 写完文件后再上传（加 sleep 确保文件已就绪）
+          echo "Waiting 30 seconds for all jobs to finish writing files..."
+          sleep 30
+
+          # 上传所有文件（用 ls 而不是 glob，避免匹配失败）
+          echo "Uploading all binaries..."
+          cd build/bin
+          for file in ech-tunnel-*; do
+            [[ -f "$file" ]] && gh release upload "$VERSION" "$file" --clobber
+          done
+
+          # 生成并上传 SHA256 校验文件
+          echo "Generating SHA256 checksums..."
+          sha256sum ech-tunnel-* > SHA256SUMS.txt
+          gh release upload "$VERSION" SHA256SUMS.txt --clobber
