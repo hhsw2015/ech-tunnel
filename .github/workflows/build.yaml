@@ -18,7 +18,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 这些平台在 ubuntu-24.04 上 100% 成功（纯 Go 或 Go 内置 musl）
           - goos: linux
             goarch: amd64
 
@@ -33,7 +32,7 @@ jobs:
             goarch: 386
 
           - goos: linux
-            goarch: armv7
+            goarch: arm
             goarm: "7"
 
           - goos: linux
@@ -57,7 +56,6 @@ jobs:
           - goos: windows
             goarch: arm
 
-          # Go 自带静态 musl 支持的平台（CGO=1 但不需要外部 gcc）
           - goos: freebsd
             goarch: amd64
 
@@ -97,7 +95,6 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      # 大部分平台用 CGO_ENABLED=0 编译
       - name: Build (CGO=0)
         if: matrix.goos != 'freebsd' && matrix.goos != 'openbsd' && matrix.goos != 'netbsd' && matrix.goos != 'solaris' && matrix.goos != 'plan9' && matrix.goos != 'dragonfly'
         env:
@@ -110,6 +107,7 @@ jobs:
             NAME="${{ matrix.custom_name }}"
           else
             NAME="ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
+            [[ -n "${{ matrix.goarm }}" ]] && NAME="${NAME}_armv${{ matrix.goarm }}"
           fi
           [[ "${{ matrix.goos }}" == "windows" ]] && NAME="${NAME}.exe"
 
@@ -117,8 +115,7 @@ jobs:
           echo "Building $NAME"
           go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      # BSD / Solaris / Plan9 / Dragonfly 需要 CGO=1（Go 自带 musl）
-      - name: Build (CGO=1 for BSD/Solaris/Plan9)
+      - name: Build (CGO=1 for BSD/Solaris/Plan9/Dragonfly)
         if: matrix.goos == 'freebsd' || matrix.goos == 'openbsd' || matrix.goos == 'netbsd' || matrix.goos == 'solaris' || matrix.goos == 'plan9' || matrix.goos == 'dragonfly'
         env:
           GOOS: ${{ matrix.goos }}
@@ -130,18 +127,19 @@ jobs:
           echo "Building $NAME (with CGO)"
           go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      # 只让一个 job 执行发布（所有二进制都已生成）
-      - name: Create Release & Upload All
+      - name: Create Release & Upload + SHA256
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
           gh release delete "$VERSION" --yes || true
-          gh release create "$VERSION" \
-            --title="$VERSION" \
-            --notes="Stable full-platform release (no external toolchains needed)"
+          gh release create "$VERSION" --title="$VERSION" --notes="Full stable cross-compile release"
 
           cd dist
-          echo "Uploading $(ls -1 | wc -l) binaries to release $VERSION"
+          echo "Uploading $(ls -1 | wc -l) binaries..."
           gh release upload "$VERSION" * --clobber
+
+          # 生成并上传 SHA256 校验文件
+          sha256sum * > "ech-tunnel_${VERSION}_SHA256.txt"
+          gh release upload "$VERSION" "ech-tunnel_${VERSION}_SHA256.txt" --clobber
