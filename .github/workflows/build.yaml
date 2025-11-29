@@ -13,69 +13,114 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ====== 常用平台（无需额外工具链）======
-          - goos: linux   ; goarch: amd64
-          - goos: linux   ; goarch: arm64
-          - goos: linux   ; goarch: arm64   ; file_suffix: android-arm64
-          - goos: linux   ; goarch: 386
-          - goos: linux   ; goarch: riscv64
-          - goos: windows ; goarch: amd64
-          - goos: windows ; goarch: arm64
-          - goos: windows ; goarch: 386
-          - goos: windows ; goarch: arm
+          # ==================== 常用平台（纯 Go，无需 CGO） ====================
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm64
+            file_suffix: android-arm64
+          - goos: linux
+            goarch: 386
+          - goos: linux
+            goarch: riscv64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: windows
+            goarch: 386
+          - goos: windows
+            goarch: arm
 
-          # ====== 需要额外工具链的平台 ======
-          # Linux 老 ARM
-          - goos: linux   ; goarch: armv5   ; goarm: "5"
-          - goos: linux   ; goarch: armv6   ; goarm: "6"
-          - goos: linux   ; goarch: armv7   ; goarm: "7"
+          # ==================== 需要 CGO 交叉工具链的平台 ====================
+          - goos: linux
+            goarch: armv5
+            goarm: "5"
+          - goos: linux
+            goarch: armv6
+            goarm: "6"
+          - goos: linux
+            goarch: armv7
+            goarm: "7"
 
-          # MIPS / MIPS64
-          - goos: linux   ; goarch: mips    ; gomips: hard  ; file_suffix: linux-mips-hard
-          - goos: linux   ; goarch: mips    ; gomips: soft  ; file_suffix: linux-mips-soft
-          - goos: linux   ; goarch: mipsle  ; gomipsle: hard; file_suffix: linux-mipsle-hard
-          - goos: linux   ; goarch: mipsle  ; gomipsle: soft; file_suffix: linux-mipsle-soft
-          - goos: linux   ; goarch: mips64
-          - goos: linux   ; goarch: mips64le
+          # MIPS / MIPS64（软硬浮点）
+          - goos: linux
+            goarch: mips
+            gomips: hard
+            file_suffix: linux-mips-hard
+          - goos: linux
+            goarch: mips
+            gomips: soft
+            file_suffix: linux-mips-soft
+          - goos: linux
+            goarch: mipsle
+            gomipsle: hard
+            file_suffix: linux-mipsle-hard
+          - goos: linux
+            goarch: mipsle
+            gomipsle: soft
+            file_suffix: linux-mipsle-soft
+          - goos: linux
+            goarch: mips64
+          - goos: linux
+            goarch: mips64le
 
-          # BSD 系列
-          - goos: freebsd ; goarch: amd64
-          - goos: freebsd ; goarch: arm64
-          - goos: freebsd ; goarch: 386
-          - goos: openbsd ; goarch: amd64
-          - goos: openbsd ; goarch: arm64
-          - goos: netbsd  ; goarch: amd64
-          - goos: netbsd  ; goarch: arm64
+          # BSD 系列（需要交叉工具链）
+          - goos: freebsd
+            goarch: amd64
+          - goos: freebsd
+            goarch: arm64
+          - goos: freebsd
+            goarch: "386"
+          - goos: openbsd
+            goarch: amd64
+          - goos: openbsd
+            goarch: arm64
+          - goos: netbsd
+            goarch: amd64
+          - goos: netbsd
+            goarch: arm64
 
-          # 其他冷门
-          - goos: dragonfly ; goarch: amd64
-          - goos: solaris   ; goarch: amd64
-          - goos: plan9     ; goarch: amd64
-          - goos: plan9     ; goarch: 386
+          # 其他冷门平台
+          - goos: dragonfly
+            goarch: amd64
+          - goos: solaris
+            goarch: amd64
+          - goos: plan9
+            goarch: amd64
+          - goos: plan9
+            goarch: "386"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install cross-compile toolchains
+      # 安装所有需要的交叉编译工具链（关键一步！）
+      - name: Install cross-compilation toolchains
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc-multilib
-          # 老 ARM (armv5/armv6)
-          sudo apt-get install -y gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf
-          # MIPS
-          sudo apt-get install -y gcc-mips-linux-gnu gcc-mipsel-linux-gnu
-          # FreeBSD / OpenBSD / NetBSD / Dragonfly / Solaris
-          sudo apt-get install -y gcc-freebsd gcc-openbsd gcc-netbsd gcc-dragonfly gcc-illumos || true
+          sudo apt-get install -y \
+            gcc gcc-multilib \
+            gcc-arm-linux-gnueabi \
+            gcc-arm-linux-gnueabihf \
+            gcc-mips-linux-gnu \
+            gcc-mipsel-linux-gnu \
+            gcc-aarch64-linux-gnu
 
-      - uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      - run: go mod download
+      - name: Download modules
+        run: go mod download
 
       - name: Build
         env:
@@ -84,7 +129,7 @@ jobs:
           GOARM: ${{ matrix.goarm }}
           GOMIPS: ${{ matrix.gomips }}
           GOMIPSLE: ${{ matrix.gomipsle }}
-          CGO_ENABLED: 1   # 必须开启 CGO 才能用交叉工具链
+          CGO_ENABLED: 1      # 必须开启 CGO 才能交叉编译 BSD / 老 ARM / MIPS
         run: |
           if [[ "${{ matrix.file_suffix }}" == "android-arm64" ]]; then
             NAME="ech-tunnel-android-arm64"
@@ -92,20 +137,26 @@ jobs:
             SUFFIX="${{ matrix.file_suffix || matrix.goos }}-${{ matrix.goarch }}"
             NAME="ech-tunnel-${SUFFIX}"
           fi
-          [[ "$GOOS" == "windows" ]] && NAME="$NAME.exe"
+          [[ "${{ matrix.goos }}" == "windows" ]] && NAME="${NAME}.exe"
 
           mkdir -p dist
-          echo "Building $NAME ($GOOS/$GOARCH $GOARM $GOMIPS $GOMIPSLE)"
+          echo "Building $NAME → $GOOS/$GOARCH (ARM=$GOARM MIPS=$GOMIPS MIPSLE=$GOMIPSLE)"
           go build -trimpath -ldflags="-s -w" -o "dist/$NAME" .
 
-      - name: Upload all binaries (only once)
+      # 只需要执行一次：由 linux/amd64 这一个 job 负责创建 Release 并上传全部二进制
+      - name: Create Release & Upload All Binaries
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=${{ inputs.version }}
+          VERSION="${{ inputs.version }}"
+          echo "Creating release $VERSION ..."
+          
           gh release delete "$VERSION" --yes || true
-          gh release create "$VERSION" --title="$VERSION" --notes="Full cross-compile release"
+          gh release create "$VERSION" \
+            --title="$VERSION" \
+            --notes="Full cross-compiled release (except darwin)" \
+            --draft=false
 
           cd dist
           echo "Uploading $(ls -1 | wc -l) binaries..."
