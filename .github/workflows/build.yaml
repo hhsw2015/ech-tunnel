@@ -1,6 +1,5 @@
 name: Go Cross Build & Release
 
-# 改成手动触发
 on:
   workflow_dispatch:
     inputs:
@@ -13,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write                # 必须加这行才能创建 Release
+      contents: write                 # 必须加这行
 
     strategy:
       fail-fast: false
@@ -33,7 +32,7 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      # 你的原始编译逻辑，一字未改！
+      # 你的原始编译逻辑，一字未改
       - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           GOOS: ${{ matrix.goos }}
@@ -47,35 +46,36 @@ jobs:
             go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
           fi
 
+      # 你的原始 artifact 上传，保留
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/bin/ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}*
+          if-no-files-found: error
 
-      # 新增：只由 linux/amd64 这个 job 负责创建 Release 并上传全部 6 个文件
-      - name: Create Release & Upload All Binaries
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      # 关键新增：每个 job 自己上传自己编译的文件！
+      - name: Upload to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
+          
+          # 第一次运行时创建 Release（后面的 job 会跳过）
+          gh release create "$VERSION" --title="$VERSION" --notes="Auto build" || true
 
-          # 删除旧旧 Release（避免重复运行失败）
-          gh release delete "$VERSION" --yes || true
-
-          # 创建 Release
-          gh release create "$VERSION" \
-            --title="$VERSION" \
-            --notes="Automated cross build: linux/windows/darwin (amd64+arm64)"
-
-          # 关键修复：等所有 job 写完文件后再上传（加 sleep 确保文件已就绪）
-          echo "Waiting 30 seconds for all jobs to finish writing files..."
-          sleep 30
-
-          # 上传所有文件（用 ls 而不是 glob，避免匹配失败）
-          echo "Uploading all binaries..."
+          # 上传自己生成的文件（--clobber 允许覆盖，防止重复运行报错）
           cd build/bin
           for file in ech-tunnel-*; do
             [[ -f "$file" ]] && gh release upload "$VERSION" "$file" --clobber
           done
 
-          # 生成并上传 SHA256 校验文件
-          echo "Generating SHA256 checksums..."
+      # 最后由 linux/amd64 生成并上传 SHA256（只运行一次）
+      - name: Generate & Upload SHA256
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd build/bin
           sha256sum ech-tunnel-* > SHA256SUMS.txt
-          gh release upload "$VERSION" SHA256SUMS.txt --clobber
+          gh release upload "${{ inputs.version }}" SHA256SUMS.txt --clobber
