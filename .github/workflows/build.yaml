@@ -38,3 +38,10 @@ jobs:
           else
             go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
           fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/bin/ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}*
+          if-no-files-found: error
