@@ -2,9 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,8 +21,43 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ======================== WebSocket 服务端 ========================
+// generateSelfSignedCert 生成自签名证书
+func generateSelfSignedCert() (tls.Certificate, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
 
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"自签名组织"},
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+		},
+		BasicConstraintsValid: true,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return cert, nil
+}
+
+// runWebSocketServer 运行 WebSocket 服务端
 func runWebSocketServer(addr string) {
 	u, err := url.Parse(addr)
 	if err != nil {
@@ -46,11 +87,8 @@ func runWebSocketServer(addr string) {
 			}
 			return []string{token}
 		}(),
-		// 性能优化: 增大缓冲区到 1MB
-		ReadBufferSize:  1048576, // 1MB
-		WriteBufferSize: 1048576, // 1MB
-		// 性能优化: 启用压缩以节省带宽(弱网环境)
-		EnableCompression: true,
+		ReadBufferSize:  65536, // 增加读缓冲区到64KB
+		WriteBufferSize: 65536, // 增加写缓冲区到64KB
 	}
 
 	http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +165,7 @@ func runWebSocketServer(addr string) {
 	}
 }
 
+// handleWebSocket 处理单个 WebSocket 连接
 func handleWebSocket(wsConn *websocket.Conn) {
 	// 创建一个 context 用于通知所有 goroutine 退出
 	ctx, cancel := context.WithCancel(context.Background())
@@ -379,24 +418,6 @@ func handleWebSocket(wsConn *websocket.Conn) {
 				}
 			}
 			continue
-		} else if strings.HasPrefix(data, "ACK:") {
-			parts := strings.SplitN(data[4:], "|", 2)
-			if len(parts) == 2 {
-				connID := parts[0]
-				var seq int64
-				fmt.Sscanf(parts[1], "%d", &seq)
-
-				ackChansMu.RLock()
-				ch, ok := ackChans[connID]
-				ackChansMu.RUnlock()
-				if ok {
-					select {
-					case ch <- seq:
-					default:
-					}
-				}
-			}
-			continue
 		} else if strings.HasPrefix(data, "CLOSE:") {
 			id := strings.TrimPrefix(data, "CLOSE:")
 			connMu.Lock()
@@ -412,13 +433,7 @@ func handleWebSocket(wsConn *websocket.Conn) {
 	}
 }
 
-// ======================== ACK 分发机制 ========================
-var (
-	ackChansMu sync.RWMutex
-	ackChans   = make(map[string]chan int64)
-)
-
-// ======================== 独立的 TCP 连接处理函数（监听 context） ========================
+// handleTCPConnection 处理单个 TCP 连接（独立的函数，监听 context）
 func handleTCPConnection(
 	ctx context.Context,
 	connID, targetAddr, firstFrameData string,
@@ -436,35 +451,13 @@ func handleTCPConnection(
 		return
 	}
 
-	// 性能优化: 设置TCP参数
-	if tcpConnReal, ok := tcpConn.(*net.TCPConn); ok {
-		_ = tcpConnReal.SetNoDelay(true)
-		_ = tcpConnReal.SetKeepAlive(true)
-		_ = tcpConnReal.SetKeepAlivePeriod(30 * time.Second)
-		_ = tcpConnReal.SetReadBuffer(1048576)  // 1MB
-		_ = tcpConnReal.SetWriteBuffer(1048576) // 1MB
-	}
-
 	// 保存连接
 	connMu.Lock()
 	conns[connID] = tcpConn
 	connMu.Unlock()
 
-	// 初始化拥塞控制器
-	controller := NewViolentCongestionController()
-
-	// 注册 ACK 通道
-	ackChan := make(chan int64, 1000)
-	ackChansMu.Lock()
-	ackChans[connID] = ackChan
-	ackChansMu.Unlock()
-
 	// 确保退出时清理
 	defer func() {
-		ackChansMu.Lock()
-		delete(ackChans, connID)
-		ackChansMu.Unlock()
-
 		_ = tcpConn.Close()
 		connMu.Lock()
 		delete(conns, connID)
@@ -472,38 +465,7 @@ func handleTCPConnection(
 		log.Printf("[服务端] TCP连接已清理: %s", connID)
 	}()
 
-	// 启动 ACK 消费者
-	type packetInfo struct {
-		sentTime time.Time
-		size     int
-	}
-	pendingPackets := make(map[int64]packetInfo)
-	var pendingMu sync.Mutex
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case seq, ok := <-ackChan:
-				if !ok {
-					return
-				}
-				pendingMu.Lock()
-				if info, exists := pendingPackets[seq]; exists {
-					delete(pendingPackets, seq)
-					pendingMu.Unlock()
-
-					rtt := time.Since(info.sentTime)
-					controller.OnAck(info.size, rtt)
-				} else {
-					pendingMu.Unlock()
-				}
-			}
-		}
-	}()
-
-	// 发送第一帧 (不计入拥塞控制，简化处理)
+	// 发送第一帧
 	if firstFrameData != "" {
 		if _, err := tcpConn.Write([]byte(firstFrameData)); err != nil {
 			log.Printf("[服务端] 发送第一帧失败: %v", err)
@@ -523,44 +485,23 @@ func handleTCPConnection(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-
-		// 集成自适应监控
-		monitor := NewAdaptiveMonitor()
-		var seq int64 = 0
-
+		buf := make([]byte, 32768)
 		for {
 			select {
 			case <-ctx.Done():
+				// WebSocket 已关闭，强制关闭 TCP 连接
 				log.Printf("[服务端] WebSocket 已关闭，强制关闭 TCP 连接: %s", connID)
 				_ = tcpConn.Close()
 				return
 			default:
 			}
 
-			_ = tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-			// 自适应调整缓冲区大小
-			currentBufSize := monitor.GetBufferSize()
-			var buf []byte
-			var bufPtr *[]byte
-
-			if currentBufSize == 1048576 {
-				bufPtr = bufferPool.Get().(*[]byte)
-				buf = *bufPtr
-			} else {
-				buf = make([]byte, currentBufSize)
-			}
-
+			// 设置短超时，避免永久阻塞
+			_ = tcpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
 			n, err := tcpConn.Read(buf)
-
-			// 归还缓冲区
-			if bufPtr != nil {
-				bufferPool.Put(bufPtr)
-			}
-
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue
+					continue // 超时继续循环，检查 ctx
 				}
 				if !isNormalCloseError(err) {
 					log.Printf("[服务端] 从目标读取失败: %v", err)
@@ -571,31 +512,8 @@ func handleTCPConnection(
 				return
 			}
 
-			monitor.Update(n)
-
-			// === 拥塞控制: 等待窗口 ===
-			controller.WaitWindow(n)
-
-			seq++
-			currentSeq := seq
-
-			// 构造带序列号的消息: DATA:connID|seq|payload
-			header := fmt.Sprintf("DATA:%s|%d|", connID, currentSeq)
-			headerBytes := []byte(header)
-
-			message := make([]byte, len(headerBytes)+n)
-			copy(message, headerBytes)
-			copy(message[len(headerBytes):], buf[:n])
-
-			// 记录发送时间
-			pendingMu.Lock()
-			pendingPackets[currentSeq] = packetInfo{sentTime: time.Now(), size: n}
-			pendingMu.Unlock()
-
-			controller.OnDataSent(n)
-
 			mu.Lock()
-			writeErr := wsConn.WriteMessage(websocket.BinaryMessage, message)
+			writeErr := wsConn.WriteMessage(websocket.BinaryMessage, append([]byte("DATA:"+connID+"|"), buf[:n]...))
 			mu.Unlock()
 
 			if writeErr != nil {
@@ -607,5 +525,6 @@ func handleTCPConnection(
 		}
 	}()
 
+	// 等待读取 goroutine 结束
 	<-done
 }

@@ -12,8 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ======================== 多通道客户端池 ========================
-
+// ECHPool 多通道客户端连接池
 type ECHPool struct {
 	wsServerAddr  string
 	connectionNum int
@@ -32,6 +31,7 @@ type ECHPool struct {
 	pendingByChannel map[int]string
 }
 
+// NewECHPool 创建新的连接池
 func NewECHPool(wsServerAddr string, n int) *ECHPool {
 	return &ECHPool{
 		wsServerAddr:     wsServerAddr,
@@ -49,12 +49,14 @@ func NewECHPool(wsServerAddr string, n int) *ECHPool {
 	}
 }
 
+// Start 启动连接池的所有连接
 func (p *ECHPool) Start() {
 	for i := 0; i < p.connectionNum; i++ {
 		go p.dialOnce(i)
 	}
 }
 
+// dialOnce 为指定通道建立连接
 func (p *ECHPool) dialOnce(index int) {
 	for {
 		wsConn, err := dialWebSocketWithECH(p.wsServerAddr, 2)
@@ -190,6 +192,7 @@ func (p *ECHPool) SendUDPClose(connID string) error {
 	return err
 }
 
+// WaitConnected 等待连接建立
 func (p *ECHPool) WaitConnected(connID string, timeout time.Duration) bool {
 	p.mu.RLock()
 	ch := p.connected[connID]
@@ -205,6 +208,7 @@ func (p *ECHPool) WaitConnected(connID string, timeout time.Duration) bool {
 	}
 }
 
+// handleChannel 处理单个通道的消息
 func (p *ECHPool) handleChannel(channelID int, wsConn *websocket.Conn) {
 	wsConn.SetPingHandler(func(message string) error {
 		p.wsMutexes[channelID].Lock()
@@ -251,20 +255,13 @@ func (p *ECHPool) handleChannel(channelID int, wsConn *websocket.Conn) {
 				continue
 			}
 
-			// 支持二进制多路复用：DATA:<id>|<seq>|<payload>
+			// 支持二进制多路复用：DATA:<id>|<payload>
 			if len(msg) > 5 && string(msg[:5]) == "DATA:" {
 				s := string(msg)
-				parts := strings.SplitN(s[5:], "|", 3)
-				if len(parts) == 3 {
+				parts := strings.SplitN(s[5:], "|", 2)
+				if len(parts) == 2 {
 					id := parts[0]
-					seq := parts[1]
-					payload := parts[2]
-
-					// 立即发送 ACK
-					p.wsMutexes[channelID].Lock()
-					_ = wsConn.WriteMessage(websocket.TextMessage, []byte("ACK:"+id+"|"+seq))
-					p.wsMutexes[channelID].Unlock()
-
+					payload := parts[1]
 					p.mu.RLock()
 					c := p.tcpMap[id]
 					p.mu.RUnlock()
@@ -405,6 +402,7 @@ func (p *ECHPool) handleChannel(channelID int, wsConn *websocket.Conn) {
 	}
 }
 
+// redialChannel 重连指定通道
 func (p *ECHPool) redialChannel(channelID int) {
 	for {
 		newConn, err := dialWebSocketWithECH(p.wsServerAddr, 2)
@@ -419,6 +417,7 @@ func (p *ECHPool) redialChannel(channelID int) {
 	}
 }
 
+// SendData 发送TCP数据
 func (p *ECHPool) SendData(connID string, b []byte) error {
 	p.mu.RLock()
 	chID, ok := p.channelMap[connID]
@@ -430,19 +429,13 @@ func (p *ECHPool) SendData(connID string, b []byte) error {
 	if !ok || ws == nil {
 		return fmt.Errorf("未分配通道")
 	}
-
-	// 构建二进制消息: "DATA:connID|" + 实际数据
-	prefix := []byte("DATA:" + connID + "|")
-	msg := make([]byte, len(prefix)+len(b))
-	copy(msg, prefix)
-	copy(msg[len(prefix):], b)
-
 	p.wsMutexes[chID].Lock()
-	err := ws.WriteMessage(websocket.BinaryMessage, msg)
+	err := ws.WriteMessage(websocket.TextMessage, []byte("DATA:"+connID+"|"+string(b)))
 	p.wsMutexes[chID].Unlock()
 	return err
 }
 
+// SendClose 发送关闭连接消息
 func (p *ECHPool) SendClose(connID string) error {
 	p.mu.RLock()
 	chID, ok := p.channelMap[connID]

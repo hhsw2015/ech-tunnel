@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -13,8 +16,26 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ======================== TCP 正向转发客户端（采用 ECH） ========================
+// buildTLSConfigWithECH 构建带 ECH 的 TLS 配置
+func buildTLSConfigWithECH(serverName string, echList []byte) (*tls.Config, error) {
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("加载系统根证书失败: %w", err)
+	}
+	tcfg := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ServerName: serverName,
+		// 完全采用 ECH，禁止回退
+		EncryptedClientHelloConfigList: echList,
+		EncryptedClientHelloRejectionVerify: func(cs tls.ConnectionState) error {
+			return errors.New("服务器拒绝 ECH（禁止回退）")
+		},
+		RootCAs: roots,
+	}
+	return tcfg, nil
+}
 
+// runTCPClient 运行 TCP 正向转发客户端（采用 ECH）
 func runTCPClient(listenForwardAddr, wsServerAddr string) {
 	// 移除 tcp:// 前缀
 	rulesStr := strings.TrimPrefix(listenForwardAddr, "tcp://")
@@ -73,14 +94,13 @@ func runTCPClient(listenForwardAddr, wsServerAddr string) {
 	wg.Wait()
 }
 
+// startMultiChannelTCPForwarder 启动多通道 TCP 转发器
 func startMultiChannelTCPForwarder(listenAddress, targetAddress string, pool *ECHPool) {
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		log.Fatalf("TCP监听失败 %s: %v", listenAddress, err)
 	}
 	log.Printf("[客户端] TCP正向转发(多通道)监听: %s -> %s", listenAddress, targetAddress)
-
-	// 复用全局池
 
 	// 接受 TCP 连接
 	for {
@@ -113,51 +133,18 @@ func startMultiChannelTCPForwarder(listenAddress, targetAddress string, pool *EC
 			continue
 		}
 
-		// 性能优化: 设置TCP参数
-		if tcpConnReal, ok := tcpConn.(*net.TCPConn); ok {
-			_ = tcpConnReal.SetNoDelay(true)
-			_ = tcpConnReal.SetKeepAlive(true)
-			_ = tcpConnReal.SetKeepAlivePeriod(30 * time.Second)
-			_ = tcpConnReal.SetReadBuffer(1048576)
-			_ = tcpConnReal.SetWriteBuffer(1048576)
-		}
-
 		go func(cID string, c net.Conn) {
 			defer func() {
 				_ = pool.SendClose(cID)
 				_ = c.Close()
 			}()
 
-			// 集成自适应监控
-			monitor := NewAdaptiveMonitor()
-
+			buf := make([]byte, 32768)
 			for {
-				// 自适应调整缓冲区大小 (现在固定为 1MB)
-				currentBufSize := monitor.GetBufferSize()
-				var buf []byte
-				var bufPtr *[]byte
-
-				if currentBufSize == 1048576 {
-					bufPtr = bufferPool.Get().(*[]byte)
-					buf = *bufPtr
-				} else {
-					buf = make([]byte, currentBufSize)
-				}
-
 				n, err := c.Read(buf)
-
-				// 归还缓冲区
-				if bufPtr != nil {
-					bufferPool.Put(bufPtr)
-				}
-
 				if err != nil {
 					return
 				}
-
-				// 更新监控数据
-				monitor.Update(n)
-
 				if err := pool.SendData(cID, buf[:n]); err != nil {
 					log.Printf("[客户端] 发送数据到通道失败: %v", err)
 					return
@@ -194,7 +181,7 @@ func dialWebSocketWithECH(wsServerAddr string, maxRetries int) (*websocket.Conn,
 			return nil, fmt.Errorf("构建 TLS(ECH) 配置失败: %v", tlsErr)
 		}
 
-		// 性能优化: 配置WebSocket Dialer
+		// 配置WebSocket Dialer（增加缓冲区大小）
 		dialer := websocket.Dialer{
 			TLSClientConfig: tlsCfg,
 			Subprotocols: func() []string {
@@ -203,10 +190,9 @@ func dialWebSocketWithECH(wsServerAddr string, maxRetries int) (*websocket.Conn,
 				}
 				return []string{token}
 			}(),
-			HandshakeTimeout:  10 * time.Second,
-			ReadBufferSize:    1048576, // 1MB
-			WriteBufferSize:   1048576, // 1MB
-			EnableCompression: true,    // 启用压缩
+			HandshakeTimeout: 10 * time.Second,
+			ReadBufferSize:   65536, // 增加读缓冲区到64KB
+			WriteBufferSize:  65536, // 增加写缓冲区到64KB
 		}
 
 		// 如果指定了IP地址，配置自定义拨号器（SNI 仍为 serverName）

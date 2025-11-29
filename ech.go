@@ -1,47 +1,40 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-// ======================== ECH 相关（客户端） ========================
-
+// DNS查询相关常量
 const (
 	typeHTTPS = 65 // DNS HTTPS 记录类型
 )
 
-// 客户端启动时查询 ECH 配置并缓存
+var (
+	// 运行期缓存的 ECHConfigList
+	echListMu sync.RWMutex
+	echList   []byte
+)
+
+// prepareECH 客户端启动时查询 ECH 配置并缓存
 func prepareECH() error {
 	for {
-		var echBase64 string
-		var err error
-
-		// 优先使用 DoH (DNS over HTTPS) 查询,绕过软路由DNS重定向
-		log.Printf("[客户端] 使用 DoH 查询 ECH: %s", echDomain)
-		echBase64, err = queryHTTPSRecordViaDoH(echDomain)
-
+		log.Printf("[客户端] 使用 DNS 服务器查询 ECH: %s -> %s", dnsServer, echDomain)
+		echBase64, err := queryHTTPSRecord(echDomain, dnsServer)
 		if err != nil {
-			log.Printf("[客户端] DoH 查询失败: %v，尝试传统DNS查询...", err)
-			// DoH失败,回退到传统UDP DNS查询
-			log.Printf("[客户端] 使用 DNS 服务器查询 ECH: %s -> %s", dnsServer, echDomain)
-			echBase64, err = queryHTTPSRecord(echDomain, dnsServer)
-			if err != nil {
-				log.Printf("[客户端] DNS 查询失败: %v，2秒后重试...", err)
-				time.Sleep(2 * time.Second)
-				continue
-			}
+			log.Printf("[客户端] DNS 查询失败: %v，2秒后重试...", err)
+			time.Sleep(2 * time.Second)
+			continue
 		}
-
 		if echBase64 == "" {
 			log.Printf("[客户端] 未找到 ECH 参数（HTTPS RR key=echconfig/5），2秒后重试...")
 			time.Sleep(2 * time.Second)
@@ -61,12 +54,13 @@ func prepareECH() error {
 	}
 }
 
-// 刷新 ECH 配置（用于重试）
+// refreshECH 刷新 ECH 配置（用于重试）
 func refreshECH() error {
 	log.Printf("[ECH] 刷新 ECH 公钥配置...")
 	return prepareECH()
 }
 
+// getECHList 获取当前的 ECH 配置列表
 func getECHList() ([]byte, error) {
 	echListMu.RLock()
 	defer echListMu.RUnlock()
@@ -76,79 +70,61 @@ func getECHList() ([]byte, error) {
 	return echList, nil
 }
 
-// queryHTTPSRecordViaDoH 使用 DoH (DNS over HTTPS) 查询 HTTPS 记录
-// 优点：可以绕过软路由的 DNS 重定向（53/UDP 端口拦截）
-func queryHTTPSRecordViaDoH(domain string) (string, error) {
-	// 使用 DNSPod 的 DoH 服务 (国内访问更快)
-	const dohURL = "https://doh.pub/dns-query"
-
-	// 构建标准的 DNS 查询包
-	query := buildDNSQuery(domain, typeHTTPS)
-
-	// 创建 HTTP 客户端，设置合理超时
-	client := &http.Client{
-		Timeout: 5 * time.Second,
+// queryHTTPSRecord 查询 DNS HTTPS 记录
+func queryHTTPSRecord(domain, dnsServer string) (string, error) {
+	dohURL := dnsServer
+	if !strings.HasPrefix(dohURL, "https://") && !strings.HasPrefix(dohURL, "http://") {
+		dohURL = "https://" + dohURL
 	}
+	return queryDoH(domain, dohURL)
+}
 
-	// 发送 POST 请求（DNS wireformat over HTTPS）
-	req, err := http.NewRequest("POST", dohURL, bytes.NewReader(query))
+// queryDoH 通过 DoH (DNS over HTTPS) 查询
+func queryDoH(domain, dohURL string) (string, error) {
+	u, err := url.Parse(dohURL)
 	if err != nil {
-		return "", fmt.Errorf("创建 DoH 请求失败: %w", err)
+		return "", fmt.Errorf("无效的 DoH URL: %v", err)
 	}
+	q := u.Query()
+	q.Set("name", domain)
+	q.Set("type", "HTTPS")
+	dnsQuery := buildDNSQuery(domain, typeHTTPS)
+	dnsBase64 := base64.RawURLEncoding.EncodeToString(dnsQuery)
 
-	// 设置必需的 HTTP 头部
-	req.Header.Set("Content-Type", "application/dns-message")
+	q.Set("dns", dnsBase64)
+	// 移除 name 和 type，因为使用了 dns 参数
+	q.Del("name")
+	q.Del("type")
+
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %v", err)
+	}
 	req.Header.Set("Accept", "application/dns-message")
+	req.Header.Set("Content-Type", "application/dns-message")
 
-	// 执行请求
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("DoH 请求失败: %w", err)
+		return "", fmt.Errorf("DoH 请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// 检查 HTTP 状态码
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("DoH 服务器返回错误状态码: %d", resp.StatusCode)
+		return "", fmt.Errorf("DoH 服务器返回错误: %d", resp.StatusCode)
 	}
 
-	// 读取 DNS 响应数据
-	response, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取 DoH 响应失败: %w", err)
+		return "", fmt.Errorf("读取 DoH 响应失败: %v", err)
 	}
 
-	// 解析 DNS 响应，提取 ECH 配置
-	return parseDNSResponse(response)
+	return parseDNSResponse(body)
 }
 
-func queryHTTPSRecord(domain, dnsServer string) (string, error) {
-	query := buildDNSQuery(domain, typeHTTPS)
-
-	conn, err := net.Dial("udp", dnsServer)
-	if err != nil {
-		return "", fmt.Errorf("连接 DNS 服务器失败: %v", err)
-	}
-	defer conn.Close()
-
-	// 设置 2 秒超时
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
-
-	if _, err = conn.Write(query); err != nil {
-		return "", fmt.Errorf("发送查询失败: %v", err)
-	}
-
-	response := make([]byte, 4096)
-	n, err := conn.Read(response)
-	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			return "", fmt.Errorf("DNS 查询超时")
-		}
-		return "", fmt.Errorf("读取 DNS 响应失败: %v", err)
-	}
-	return parseDNSResponse(response[:n])
-}
-
+// buildDNSQuery 构建 DNS 查询报文
 func buildDNSQuery(domain string, qtype uint16) []byte {
 	query := make([]byte, 0, 512)
 	// Header
@@ -168,6 +144,7 @@ func buildDNSQuery(domain string, qtype uint16) []byte {
 	return query
 }
 
+// parseDNSResponse 解析 DNS 响应报文
 func parseDNSResponse(response []byte) (string, error) {
 	if len(response) < 12 {
 		return "", fmt.Errorf("响应长度无效")
@@ -219,7 +196,7 @@ func parseDNSResponse(response []byte) (string, error) {
 	return "", nil
 }
 
-// 仅抽取 SvcParamKey == 5 (ECHConfigList/echconfig)
+// parseHTTPSRecord 解析 HTTPS 记录，仅抽取 SvcParamKey == 5 (ECHConfigList/echconfig)
 func parseHTTPSRecord(data []byte) string {
 	if len(data) < 2 {
 		return ""
