@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag (e.g. v1.5.0 or nightly-20251129)'
+        description: 'Release tag（例如 v1.5.0 或 nightly-20251129）'
         required: true
         type: string
 
@@ -14,8 +14,8 @@ permissions:
   contents: write
 
 jobs:
-  # 只有真实 release published 时才把 release 标记为 prerelease
-  mark-prerelease:
+  # 只有真实发布时才执行这个 job
+  mark-as-prerelease:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
@@ -26,48 +26,47 @@ jobs:
           id: ${{ github.event.release.id }}
           prerelease: true
 
-  release:
-    needs: mark-prerelease   # 手动触发时这个 job 被跳过，不影响
+  # 主编译任务
+  build-all:
+    # 关键改进：只有在 release 事件时才依赖 mark-as-prerelease，手动时直接跳过这一行
+    needs: ${{ github.event_name == 'release' && 'mark-as-prerelease' || '' }}
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
         build-type: [standard, lite]
         target-platform: ['', android, freebsd, linux_musl, linux_musl_arm]
-        # 10 个组合全部都会跑
 
-    name: ${{ matrix.target-platform != '' && matrix.target-platform || 'host' }}${{ matrix.build-type == 'lite' && '-lite' || '' }}
+    name: ${{ matrix.target-platform || 'host' }}${{ matrix.build-type == 'lite' && '-lite' || '' }}
 
     steps:
       - name: Free Disk Space
         if: matrix.target-platform == ''
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: false
           android: true
           dotnet: true
           haskell: true
           large-packages: true
           docker-images: true
-          swap-storage: true
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.25'
 
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install dependencies (only on host build)
+      - name: Install dependencies
         if: matrix.target-platform == ''
         run: |
           sudo snap install zig --classic --beta
           docker pull crazymax/xgo:latest
-          # xgo 用来交叉编译
           go install github.com/crazy-max/xgo@latest
-          sudo apt install -y upx
+          sudo apt-get update && sudo apt-get install -y upx
 
       - name: Build
         run: |
@@ -75,22 +74,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 关键：上传资产，支持覆盖，手动和自动都完美工作
-      - name: Upload Release Assets (with overwrite)
+      - name: Create release (only for manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          gh release create "${{ inputs.version }}" --draft --prerelease --title "Release ${{ inputs.version }}" || true
+
+      - name: Upload assets (overwrite)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 自动判断当前是真实 release 还是手动触发的
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            TAG="${{ github.event.release.tag_name }}"
-          else
-            TAG="${{ inputs.version }}"
-            # 手动触发时自动创建 tag + draft release（如果不存在）
-            gh release create "$TAG" --draft --prerelease --title "Release $TAG" --notes "Manual build" || true
-          fi
-
+          TAG="${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}"
           cd build/compress
           for file in *; do
-            [ -f "$file" ] && gh release upload "$TAG" "$file" --clobber || true
+            [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber
           done
-          echo "All assets uploaded to release: $TAG"
