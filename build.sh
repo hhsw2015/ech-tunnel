@@ -5,8 +5,8 @@ appName="ech-tunnel"
 builtAt="$(date +'%F %T %z')"
 gitCommit=$(git log --pretty=format:"%h" -1)
 
-# 自动获取最新 tag 作为版本号
-version=$(git describe --abbrev=0 --tags 2>/dev/null || echo "v1.0")
+# 自动取最新 tag 没有 tag 就用 v0.0.0
+version=$(git describe --abbrev=0 --tags 2>/dev/null || echo "v0.0.0")
 
 ldflags="\
 -w -s \
@@ -17,10 +17,26 @@ ldflags="\
 
 mkdir -p build
 
-# ============ 下面全部保留 OpenList 原版函数结构 ============
+# ========================================
+# 下面全部保留 OpenList 原版函数写法 + 已修复所有路径问题
+# ========================================
+
+BuildWinArm64() {
+  local output="$1"
+  echo "building for windows-arm64"
+  # 从 OpenList 官方仓库直接下载 wrapper（最稳定）
+  curl -fsSL -o zcc-arm64 https://github.com/OpenListTeam/OpenList/raw/main/wrapper/zcc-arm64
+  curl -fsSL -o zcxx-arm64 https://github.com/OpenListTeam/OpenList/raw/main/wrapper/zcxx-arm64
+  chmod +x zcc-arm64 zcxx-arm64
+
+  # 关键：使用绝对路径
+  CC="$PWD/zcc-arm64" CXX="$PWD/zcxx-arm64" \
+  GOOS=windows GOARCH=arm64 CGO_ENABLED=1 \
+  go build -o "$output" -ldflags="$ldflags" .
+}
 
 BuildRelease() {
-  echo "=== 开始编译主流平台（xgo）==="
+  echo "=== 主流平台：xgo 编译 ==="
   docker pull crazymax/xgo:latest
   go install github.com/crazy-max/xgo@latest
 
@@ -28,74 +44,61 @@ BuildRelease() {
     -go 1.25.x \
     -out "$appName" \
     -ldflags="$ldflags" \
-    -targets=windows/amd64,windows/arm64,darwin/amd64,darwin/arm64,linux/amd64,linux/arm64,linux/arm-7,linux/arm-6,linux/386,freebsd/amd64 \
+    -targets=windows/amd64,darwin/amd64,darwin/arm64,linux/amd64,linux/arm64,linux/arm-7,linux/arm-6,linux/386,freebsd/amd64 \
     .
 
   mv "$appName"-* build/
+  # upx 压缩（出错也无所谓）
   upx --best --lzma build/"$appName"-* 2>/dev/null || true
-}
 
-BuildWinArm64() {
-  echo "building for windows-arm64"
-  curl -fsSL -o zcc-arm64 https://github.com/OpenListTeam/OpenList/raw/main/wrapper/zcc-arm64
-  curl -fsSL -o zcxx-arm64 https://github.com/OpenListTeam/OpenList/raw/main/wrapper/zcxx-arm64
-  chmod +x zcc-arm64 zcxx-arm64
-
-  export GOOS=windows
-  export GOARCH=arm64
-  export CC=$(pwd)/zcc-arm64
-  export CXX=$(pwd)/zcxx-arm64
-  export CGO_ENABLED=1
-  go build -o "build/${appName}-windows-arm64.exe" -ldflags="$ldflags" .
+  # 单独补 windows-arm64（xgo 有时漏）
+  BuildWinArm64 "build/${appName}-windows-arm64.exe"
 }
 
 BuildReleaseLinuxMusl() {
-  echo "=== 编译 musl 静态版（amd64 / arm64 / armv7）==="
+  echo "=== musl 静态链接：amd64 / arm64 / armv7 ==="
   local BASE="https://github.com/OpenListTeam/musl-compilers/releases/latest/download/"
   local FILES=(x86_64-linux-musl-cross aarch64-linux-musl-cross armv7l-linux-musleabihf-cross)
 
-  for i in "${FILES[@]}"; do
-    curl -fsSL -o "${i}.tgz" "${BASE}${i}.tgz"
-    sudo tar xf "${i}.tgz" --strip-components=1 -C /usr/local
-    rm -f "${i}.tgz"
+  for t in "${FILES[@]}"; do
+    curl -fsSL "${BASE}${t}.tgz" | sudo tar -xz -C /usr/local --strip-components=1
   done
 
   local muslflags="--extldflags '-static' $ldflags"
 
-  # amd64 musl
-  CC=x86_64-linux-musl-gcc   GOOS=linux GOARCH=amd64   CGO_ENABLED=1 go build -o "build/${appName}-linux-musl-amd64"   -ldflags="$muslflags" .
-
-  # arm64 musl
-  CC=aarch64-linux-musl-gcc  GOOS=linux GOARCH=arm64  CGO_ENABLED=1 go build -o "build/${appName}-linux-musl-arm64"   -ldflags="$muslflags" .
-
-  # armv7 musl
+  CC=x86_64-linux-musl-gcc      GOOS=linux GOARCH=amd64   CGO_ENABLED=1 go build -o "build/${appName}-linux-musl-amd64"   -ldflags="$muslflags" .
+  CC=aarch64-linux-musl-gcc     GOOS=linux GOARCH=arm64  CGO_ENABLED=1 go build -o "build/${appName}-linux-musl-arm64"   -ldflags="$muslflags" .
   CC=armv7l-linux-musleabihf-gcc GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 go build -o "build/${appName}-linux-musl-armv7" -ldflags="$muslflags" .
 }
 
 BuildReleaseAndroid() {
-  echo "=== 编译 Android 四个架构 ==="
+  echo "=== Android 四个架构（已修复绝对路径问题）==="
   wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
   unzip -q android-ndk-r26b-linux.zip
   rm android-ndk-r26b-linux.zip
 
-  declare -A arches=(
+  # 关键修复：使用 $PWD 变成绝对路径
+  local NDK="$PWD/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+  declare -A targets=(
     [amd64]=x86_64-linux-android24-clang
     [arm64]=aarch64-linux-android24-clang
     [386]=i686-linux-android24-clang
     [arm]=armv7a-linux-androideabi24-clang
   )
 
-  for arch in "${!arches[@]}"; do
-    clang="${arches[$arch]}"
-    goarch=$arch
-    goarm=""
+  for arch in "${!targets[@]}"; do
+    local clang="${targets[$arch]}"
+    local goarch="$arch"
+    local goarm=""
     [ "$arch" = "arm" ] && goarm="7"
 
-    CC="./android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}" \
+    echo "building android-$arch"
+    CC="${NDK}/${clang}" \
     GOOS=android GOARCH=$goarch GOARM=$goarm CGO_ENABLED=1 \
     go build -o "build/${appName}-android-${arch}" -ldflags="$ldflags" .
 
-    ./android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip "build/${appName}-android-${arch}"
+    "${NDK}/llvm-strip" "build/${appName}-android-${arch}"
   done
 }
 
@@ -103,36 +106,39 @@ MakeRelease() {
   echo "=== 打包 + 生成 SHA256SUMS ==="
   cd build
 
-  # Linux / Darwin / FreeBSD → tar.gz
+  # Linux / Darwin / FreeBSD → .tar.gz
   for f in ${appName}-linux-* ${appName}-darwin-* ${appName}-freebsd-*; do
     [ -f "$f" ] && tar -czf "${f}.tar.gz" "$f" && rm "$f"
   done
 
-  # Windows → zip
-  for f in ${appName}-windows-*; do
+  # Windows → .zip
+  for f in ${appName}-windows-*.exe; do
     [ -f "$f" ] && zip "${f}.zip" "$f" && rm "$f"
   done
 
-  # Android 直接保留裸二进制（习惯如此）
-  # 如需压缩可取消下一行注释
+  # Android 直接保留裸文件（习惯）
+  # 如需压缩可去掉下面这行注释
   # for f in ${appName}-android-*; do [ -f "$f" ] && gzip "$f"; done
 
   sha256sum * > SHA256SUMS.txt
-  echo "=== 全部完成！输出目录：$(pwd) ==="
+  echo "全部完成！共 $(ls -1 | wc -l) 个文件"
   ls -lh
 }
 
-# ============ 主逻辑（完全模仿 OpenList 的调用方式） ============
+# ========================================
+# 主入口（只保留 release 模式）
+# ========================================
 
-if [ "$1" = "release" ] || [ -z "$1" ]; then
-  BuildRelease          # xgo 主流平台 + windows-arm64
-  BuildWinArm64         # 补 windows-arm64（xgo 有时会漏）
-  BuildReleaseLinuxMusl # musl 静态三件套
-  BuildReleaseAndroid   # Android 四件套
+if [[ "$1" == "release" ]] || [[ -z "$1" ]]; then
+  BuildRelease
+  BuildReleaseLinuxMusl
+  BuildReleaseAndroid
   MakeRelease
-  echo "ech-tunnel 全平台编译完成！共 $(ls build | wc -l) 个文件"
+else
+  echo "ech-tunnel 全平台构建成功！"
+  echo "输出目录：$(pwd)/build"
 else
   echo "用法: bash build.sh [release]"
-  echo "当前仅支持 release 模式，已为你自动执行"
-  bash "$0" release
+  echo "已自动为你执行 release 模式"
+  exec bash "$0" release
 fi
