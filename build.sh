@@ -289,8 +289,7 @@ BuildRelease() {
       linux/mips64le,\
       freebsd/amd64,\
       freebsd/arm64,\
-      freebsd/386 \
-    ./
+      freebsd/386 ech-tunnel
 
   mv "$appName"-* build/
   BuildWinArm64                 # windows-arm64
