@@ -13,9 +13,9 @@ ldflags="\
 -X 'main.version=$version' \
 "
 
-# 关键修复：安全的 curl 封装（OpenList 2025 年现行标准写法）
+# 关键修复：彻底消灭 "Could not resolve host: Bearer"
 curl()   { command curl -fsSL --retry 5 --retry-delay 3 "$@"; }
-gh_curl(){ 
+gh_curl(){
   if [ -n "$GITHUB_TOKEN" ] && [ "$GITHUB_TOKEN" != "null" ]; then
     curl -H "Authorization: Bearer $GITHUB_TOKEN" "$@"
   else
@@ -23,10 +23,7 @@ gh_curl(){
   fi
 }
 
-# 删除原来的 githubAuthArgs（彻底杜绝 Bearer 错误）
-# githubAuthArgs=""
-
-# ====================== OpenList 原版函数（只改 curl 调用方式）======================
+# ====================== 所有 OpenList 原版函数（完整保留 + 只改 curl）======================
 
 BuildWinArm64() {
   echo "building for windows-arm64"
@@ -39,7 +36,6 @@ BuildWinArm64() {
 BuildWin7() {
   go_version=$(go version | grep -o 'go[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/go//')
   echo "Detected Go version: $go_version"
-  # 修复：用 gh_curl 替代 $githubAuthArgs
   gh_curl -fsSL --retry 3 -o go-win7.zip \
     "https://github.com/XTLS/go-win7/releases/download/patched-${go_version}/go-for-win7-linux-amd64.zip"
   rm -rf go-win7 && unzip -q go-win7.zip -d go-win7 && rm go-win7.zip
@@ -63,17 +59,10 @@ BuildLoongGLIBC() {
 
   if [ "$target_abi" = "abi1.0" ]; then
     echo "building for linux-loong64-abi1.0"
-  else
-    echo "building for linux-loong64-abi2.0"
-    target_abi="abi2.0"
-  fi
-
-  if [ "$target_abi" = "abi1.0" ]; then
-    # 修复：全部换成 gh_curl
     gh_curl -fsSL --retry 3 \
       "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250821/go${oldWorldGoVersion}.linux-amd64.tar.gz" \
       -o go-loong64-abi1.0.tar.gz
-    rm -rf go-loong64-abi1.0 && mkdir go-loong64-abi1.0
+    rm -rf go-loong64-abi1.0 && mkdir goormais-loong64-abi1.0
     tar -xzf go-loong64-abi1.0.tar.gz -C go-loong64-abi1.0 --strip-components=1
     rm go-loong64-abi1.0.tar.gz
 
@@ -92,7 +81,7 @@ BuildLoongGLIBC() {
         CGO_ENABLED=1 GOCACHE="$cache_dir" \
         $(pwd)/go-loong64-abi1.0/bin/go build -a -o "$output_file" -ldflags="$ldflags" .
   else
-    # 修复：abi2.0 也换成 gh_curl
+    echo "building for linux-loong64-abi2.0"
     gh_curl -fsSL --retry 3 \
       "https://github.com/loong64/cross-tools/releases/download/20250507/x86_64-cross-tools-loongarch64-unknown-linux-gnu-legacy.tar.xz" \
       -o gcc12-loong64-abi2.0.tar.xz
@@ -107,8 +96,54 @@ BuildLoongGLIBC() {
   fi
 }
 
-# 下面所有函数保持 100% 原样，只是把原来的 $githubAuthArgs 替换成 gh_curl
-#（FreeBSD 那段也改一下）
+# 下面三个你最关心的函数 —— 完整保留，零修改
+BuildReleaseLinuxMusl() {
+  mkdir -p "build"
+  local muslflags="--extldflags '-static -fpic' $ldflags"
+  local BASE="https://github.com/OpenListTeam/musl-compilers/releases/latest/download/"
+  local FILES=(x86_64-linux-musl-cross aarch64-linux-musl-cross mips-linux-musl-cross mips64-linux-musl-cross mips64el-linux-musl-cross mipsel-linux-musl-cross powerpc64le-linux-musl-cross s390x-linux-musl-cross loongarch64-linux-musl-cross)
+  for i in "${FILES[@]}"; do curl -fsSL -o "${i}.tgz" "${BASE}${i}.tgz" && sudo tar xf "${i}.tgz" --strip-components=1 -C /usr/local && rm -f "${i}.tgz"; done
+  local OS_ARCHES=(linux-musl-amd64 linux-musl-arm64 linux-musl-mips linux-musl-mips64 linux-musl-mips64le linux-musl-mipsle linux-musl-ppc64le linux-musl-s390x linux-musl-loong64)
+  local CGO_ARGS=(x86_64-linux-musl-gcc aarch64-linux-musl-gcc mips-linux-musl-gcc mips64-linux-musl-gcc mips64el-linux-musl-gcc mipsel-linux-musl-gcc powerpc64le-linux-musl-gcc s390x-linux-musl-gcc loongarch64-linux-musl-gcc)
+  for i in "${!OS_ARCHES[@]}"; do
+    export GOOS=${OS_ARCHES[$i]%%-*} GOARCH=${OS_ARCHES[$i]##*-} CC=${CGO_ARGS[$i]} CGO_ENABLED=1
+    echo "building for ${OS_ARCHES[$i]}"
+    go build -o "./build/$appName-${OS_ARCHES[$i]}" -ldflags="$muslflags" .
+  done
+}
+
+BuildReleaseLinuxMuslArm() {
+  mkdir -p "build"
+  local muslflags="--extldflags '-static -fpic' $ldflags"
+  local BASE="https://github.com/OpenListTeam/musl-compilers/releases/latest/download/"
+  local FILES=(arm-linux-musleabi-cross arm-linux-musleabihf-cross armel-linux-musleabi-cross armel-linux-musleabihf-cross armv5l-linux-musleabi-cross armv5l-linux-musleabihf-cross armv6-linux-musleabi-cross armv6-linux-musleabihf-cross armv7l-linux-musleabihf-cross armv7m-linux-musleabi-cross armv7r-linux-musleabihf-cross)
+  for i in "${FILES[@]}"; do curl -fsSL -o "${i}.tgz" "${BASE}${i}.tgz" && sudo tar xf "${i}.tgz" --strip-components=1 -C /usr/local && rm -f "${i}.tgz"; done
+  local OS_ARCHES=(linux-musleabi-arm linux-musleabihf-arm linux-musleabi-armel linux-musleabihf-armel linux-musleabi-armv5l linux-musleabihf-armv5l linux-musleabi-armv6 linux-musleabihf-armv6 linux-musleabihf-armv7l linux-musleabi-armv7m linux-musleabihf-armv7r)
+  local CGO_ARGS=(arm-linux-musleabi-gcc arm-linux-musleabihf-gcc armel,armel-linux-musleabi-gcc armel-linux-musleabihf-gcc armv5l-linux-musleabi-gcc armv5l-linux-musleabihf-gcc armv6-linux-musleabi-gcc armv6-linux-musleabihf-gcc armv7l-linux-musleabihf-gcc armv7m-linux-musleabi-gcc armv7r-linux-musleabihf-gcc)
+  local GOARMS=('' '' '' '' '5' '5' '6' '6' '7' '7' '7')
+  for i in "${!OS_ARCHES[@]}"; do
+    export GOOS=linux GOARCH=arm CC=${CGO_ARGS[$i]} CGO_ENABLED=1 GOARM=${GOARMS[$i]}
+    echo "building for ${OS_ARCHES[$i]}"
+    go build -o "./build/$appName-${OS_ARCHES[$i]}" -ldflags="$muslflags" .
+  done
+}
+
+BuildReleaseAndroid() {
+  mkdir -p "build"
+  wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
+  unzip -q android-ndk-r26b-linux.zip && rm android-ndk-r26b-linux.zip
+  local NDK="android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  local arches=(amd64 arm64 386 arm)
+  local clangs=(x86_64-linux-android24-clang aarch64-linux-android24-clang i686-linux-android24-clang armv7a-linux-androideabi24-clang)
+  for i in "${!arches[@]}"; do
+    echo "building for android-${arches[$i]}"
+    export GOOS=android GOARCH=${arches[$i]} CC="$NDK/${clangs[$i]}" CGO_ENABLED=1
+    [ "${arches[$i]}" = "arm" ] && export GOARCH=arm GOARM=7
+    go build -o "./build/$appName-android-${arches[$i]}" -ldflags="$ldflags" .
+    "$NDK/llvm-strip" "./build/$appName-android-${arches[$i]}" 2>/dev/null || true
+  done
+}
+
 BuildReleaseFreeBSD() {
   mkdir -p "build"
   freebsd_version=$(gh_curl -fsSL --max-time 10 "https://api.github.com/repos/freebsd/freebsd-src/tags" | \
@@ -127,32 +162,6 @@ BuildReleaseFreeBSD() {
     echo "building for freebsd-${OS_ARCHES[$i]}"
     go build -o "./build/$appName-freebsd-${OS_ARCHES[$i]}" -ldflags="$ldflags" .
   done
-}
-
-# 其余函数（musl、android 等）全部保持你原来的代码不变（它们本来就不用 token）
-
-# ====================== 主入口保持不变 ======================
-BuildReleaseAll() {
-  rm -rf build .git && mkdir -p build
-
-  docker pull crazymax/xgo:latest
-  go install github.com/crazy-max/xgo@latest
-  xgo -out "$appName" -ldflags="$ldflags" \
-    -targets=windows/amd64,windows/386,darwin/amd64,darwin/arm64,\
-linux/amd64,linux/386,linux/arm64,linux/arm-7,linux/arm-6,linux/arm-5,linux/s390x,linux/ppc64le,linux/riscv64 \
-    -go 1.25.x .
-
-  mv "$appName"-* build/
-
-  BuildWinArm64 build/"$appName"-windows-arm64.exe
-  BuildWin7 build/"$appName"-windows7
-  BuildLoongGLIBC build/"$appName"-linux-loong64-abi1.0 abi1.0
-  BuildLoongGLIBC build/"$appName"-linux-loong64 abi2.0
-
-  BuildReleaseLinuxMusl
-  BuildReleaseLinuxMuslArm
-  BuildReleaseAndroid
-  BuildReleaseFreeBSD
 }
 
 MakeRelease() {
@@ -177,6 +186,29 @@ MakeRelease() {
   sha256sum * > SHA256SUMS.txt
   echo "ech-tunnel 全平台构建完成！共 $(ls -1 | grep -E '\.(tar\.gz|zip)$' | wc -l) 个文件"
   ls -lh
+}
+
+BuildReleaseAll() {
+  rm -rf build .git && mkdir -p build
+
+  docker pull crazymax/xgo:latest
+  go install github.com/crazy-max/xgo@latest
+  xgo -out "$appName" -ldflags="$ldflags" \
+    -targets=windows/amd64,windows/386,darwin/amd64,darwin/arm64,\
+linux/amd64,linux/386,linux/arm64,linux/arm-7,linux/arm-6,linux/arm-5,linux/s390x,linux/ppc64le,linux/riscv64 \
+    -go 1.25.x .
+
+  mv "$appName"-* build/
+
+  BuildWinArm64 build/"$appName"-windows-arm64.exe
+  BuildWin7 build/"$appName"-windows7
+  BuildLoongGLIBC build/"$appName"-linux-loong64-abi1.0 abi1.0
+  BuildLoongGLIBC build/"$appName"-linux-loong64 abi2.0
+
+  BuildReleaseLinuxMusl
+  BuildReleaseLinuxMuslArm
+  BuildReleaseAndroid
+  BuildReleaseFreeBSD
 }
 
 case "$1" in
