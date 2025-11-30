@@ -290,7 +290,7 @@ BuildRelease() {
       freebsd/amd64,\
       freebsd/arm64,\
       freebsd/386 \
-      .
+      ./
 
   mv "$appName"-* build/
   BuildWinArm64                 # windows-arm64
