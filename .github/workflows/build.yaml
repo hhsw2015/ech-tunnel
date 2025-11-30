@@ -53,23 +53,13 @@ jobs:
           bash build.sh release ${{ matrix.build-type == 'lite' && 'lite' || '' }} ${{ matrix.target-platform }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
           
-      - name: Create release if manual
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          gh release create "${{ inputs.version }}" --draft --prerelease --title "Release ${{ inputs.version }}" || true
-
       - name: Upload assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}"
-          cd build/compress
-          for file in *; do
-            [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
-          done
-
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/compress/*
+          prerelease: false
+          tag_name: ${{ inputs.version }}
 
 
 
