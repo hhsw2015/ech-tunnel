@@ -6,35 +6,95 @@ on:
       version:
         description: 'Release version (e.g. v1.5.0)'
         required: true
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  # 可选：创建 Release 并标记为 Prerelease（和 OpenList 一样专业）
+  mark-prerelease:
+    name: Create Release & Mark Prerelease
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y upx-ucl wget unzip
-
-      - name: Build all platforms
-        run: |
-          chmod +x build.sh
-          bash build.sh release
-
-      - name: Upload Release
+      - name: Create or update release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ inputs.version }}" build/* \
+          gh release create "${{ inputs.version }}" \
             --title "${{ inputs.version }}" \
             --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
-            || true
+            --prerelease || true
+
+      - name: Set prerelease flag
+        uses: irongut/EditRelease@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          id: ${{ github.event.release.id }}
+          prerelease: true
+
+  # 主力编译任务（5 个并行 job）
+  build:
+    needs: mark-prerelease
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target-platform: [ '', 'android', 'freebsd', 'linux_musl', 'linux_musl_all' ]
+        include:
+          - target-platform: ''
+            name: Standard (xgo + windows-arm64)
+          - target-platform: android
+            name: Android
+          - target-platform: freebsd
+            name: FreeBSD
+          - target-platform: linux_musl
+            name: Linux musl (common arches)
+          - target-platform: linux_musl_all
+            name: Linux musl (all cold arches)
+    name: Build ${{ matrix.name }}
+    
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+
+      - name: Install tools
+        run: |
+          sudo apt update -qq
+          sudo apt install -y upx-ucl wget unzip
+          docker pull crazymax/xgo:latest
+          go install github.com/crazy-max/xgo@latest
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          chmod +x build.sh
+          case "${{ matrix.target-platform }}" in
+            "")              bash build.sh release ;;
+            android)         bash build.sh release android ;;
+            freebsd)         bash build.sh release freebsd ;;
+            linux_musl)      bash build.sh release linux_musl ;;
+            linux_musl_all)  bash build.sh release linux_musl_all ;;
+          esac
+
+      - name: Upload assets (自动覆盖已存在文件)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/compress/*
+          tag_name: ${{ inputs.version }}
+          fail_on_unmatched_files: false
