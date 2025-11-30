@@ -173,8 +173,9 @@ BuildWin7() {
   local prefix="$1"
   go_version=$(go version | grep -o 'go[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/go//')
   echo "building windows7 (detected go$go_version)"
-  gh_curl -fsSL -o go-win7.zip \
-    "https://github.com/XTLS/go-win7/releases/download/patched-${go_version}/go-for-win7-linux-amd64.zip"
+  curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+    "https://github.com/XTLS/go-win7/releases/download/patched-${go_version}/go-for-win7-linux-amd64.zip" \
+    -o go-win7.zip
   rm -rf go-win7 && unzip -q go-win7.zip -d go-win7 && rm go-win7.zip
   chmod +x ./wrapper/zcc-win7* ./wrapper/zcxx-win7* 2>/dev/null || true
 
@@ -190,7 +191,7 @@ BuildWin7() {
 }
 
 BuildReleaseFreeBSD() {
-  local ver=$(gh_curl -fsSL https://api.github.com/repos/freebsd/freebsd-src/tags |
+  local ver=$(curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/freebsd/freebsd-src/tags |
               jq -r '.[].name' | grep '^release/14\.' | grep -v -- '-p[0-9]*$' | sort -V | tail -1 | cut -d/ -f2)
   [ -z "$ver" ] && ver="14.3"
   echo "Using FreeBSD $ver"
@@ -232,13 +233,23 @@ freebsd/amd64,freebsd/arm64,freebsd/386 .
   mv "$appName"-* build/
   BuildWinArm64                 # windows-arm64
   BuildWin7 build/"$appName"-windows7
-  BuildLoongGLIBC "build/$appName-linux-loong64-abi1.0" abi1.0
-  BuildLoongGLIBC "build/$appName-linux-loong64" abi2.0
   BuildReleaseLinuxMusl         # 9 个 musl 冷门
   BuildReleaseLinuxMuslArm      # 11 个极端 arm
   BuildReleaseAndroid           # Android 四件套
+  BuildLoongGLIBC "build/$appName-linux-loong64-abi1.0" abi1.0
+  BuildLoongGLIBC "build/$appName-linux-loong64" abi2.0
   BuildReleaseFreeBSD
 
+
+  BuildWinArm64 build/"$appName"-windows-arm64.exe
+  BuildWin7 build/"$appName"-windows7
+  BuildLoongGLIBC build/"$appName"-linux-loong64-abi1.0 abi1.0
+  BuildLoongGLIBC build/"$appName"-linux-loong64 abi2.0
+
+  BuildReleaseLinuxMusl
+  BuildReleaseLinuxMuslArm
+  BuildReleaseAndroid
+  BuildReleaseFreeBSD
 }
 
 case "$1" in
