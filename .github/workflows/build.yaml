@@ -12,30 +12,43 @@ permissions:
   contents: write
 
 jobs:
-  # 可选：创建 Release 并标记为 Prerelease（和 OpenList 一样专业）
-  mark-prerelease:
-    name: Create Release & Mark Prerelease
+  # 第一步：创建 Release 并获取 ID（修复 id 问题）
+  create-release:
+    name: Create Release
     runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
     steps:
       - name: Create or update release
+        id: create
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ inputs.version }}" \
-            --title "${{ inputs.version }}" \
-            --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
-            --prerelease || true
+          VERSION="${{ inputs.version }}"
+          # 创建 Release（已存在则更新）
+          RELEASE_ID=$(gh release view "$VERSION" --json id --jq .id 2>/dev/null || echo "")
+          if [ -z "$RELEASE_ID" ]; then
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
+              --generate-notes
+            RELEASE_ID=$(gh release view "$VERSION" --json id --jq .id)
+          fi
+          echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
+          echo "Release ID: $RELEASE_ID"
 
-      - name: Set prerelease flag
+      # 可选：标记为 prerelease（现在 id 是纯数字）
+      - name: Mark as Prerelease (optional)
+        if: always()
         uses: irongut/EditRelease@v1.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          id: ${{ github.event.release.id }}
+          id: ${{ steps.create.outputs.release_id }}  # 现在是纯数字 ID
           prerelease: true
 
-  # 主力编译任务（5 个并行 job）
+  # 主力编译任务（5 个并行 job，依赖 create-release）
   build:
-    needs: mark-prerelease
+    needs: create-release
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -50,7 +63,7 @@ jobs:
           - target-platform: linux_musl
             name: Linux musl (common arches)
           - target-platform: linux_musl_all
-            name: Linux musl (all cold arches)
+            name: Linux musl (all cold arches: mips/loong64/riscv64...)
     name: Build ${{ matrix.name }}
     
     steps:
@@ -77,7 +90,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt update -qq
-          sudo apt install -y upx-ucl wget unzip
+          sudo apt install -y upx-ucl wget unzip jq  # 加 jq 用于 JSON 解析
           docker pull crazymax/xgo:latest
           go install github.com/crazy-max/xgo@latest
 
@@ -93,8 +106,13 @@ jobs:
           esac
 
       - name: Upload assets (自动覆盖已存在文件)
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/compress/*
-          tag_name: ${{ inputs.version }}
-          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          # 上传所有文件，--clobber 强制覆盖
+          cd build/compress
+          for file in *; do
+            [[ -f "$file" ]] && gh release upload "$VERSION" "$file" --clobber
+          done
+          echo "Assets uploaded with overwrite!"
