@@ -173,9 +173,8 @@ BuildWin7() {
   local prefix="$1"
   go_version=$(go version | grep -o 'go[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/go//')
   echo "building windows7 (detected go$go_version)"
-  curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
-    "https://github.com/XTLS/go-win7/releases/download/patched-${go_version}/go-for-win7-linux-amd64.zip" \
-    -o go-win7.zip
+  curl -fsSL --retry 3 -o go-win7.zip -H "Authorization: Bearer $GITHUB_TOKEN" \
+    "https://github.com/XTLS/go-win7/releases/download/patched-${go_version}/go-for-win7-linux-amd64.zip"
   rm -rf go-win7 && unzip -q go-win7.zip -d go-win7 && rm go-win7.zip
   chmod +x ./wrapper/zcc-win7* ./wrapper/zcxx-win7* 2>/dev/null || true
 
@@ -191,8 +190,15 @@ BuildWin7() {
 }
 
 BuildReleaseFreeBSD() {
-  local ver=$(curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/freebsd/freebsd-src/tags |
-              jq -r '.[].name' | grep '^release/14\.' | grep -v -- '-p[0-9]*$' | sort -V | tail -1 | cut -d/ -f2)
+  ver=$(eval "curl -fsSL --max-time 2 $GITHUB_TOKEN \"https://api.github.com/repos/freebsd/freebsd-src/tags\"" | \
+    jq -r '.[].name' | \
+    grep '^release/14\.' | \
+    grep -v -- '-p[0-9]*$' | \
+    sort -V | \
+    tail -1 | \
+    sed 's/release\///' | \
+    sed 's/\.0$//')
+    
   [ -z "$ver" ] && ver="14.3"
   echo "Using FreeBSD $ver"
 
