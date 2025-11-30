@@ -190,6 +190,7 @@ BuildWin7() {
 }
 
 BuildReleaseFreeBSD() {
+  sudo apt-get install -y clang lld
   rm -rf .git/
   mkdir -p "build/freebsd"
   
@@ -246,7 +247,6 @@ linux/amd64,linux/386,linux/arm64,linux/arm-7,linux/arm-6,linux/arm-5,linux/s390
 freebsd/amd64,freebsd/arm64,freebsd/386 .
 
   mv "$appName"-* build/
-  BuildReleaseFreeBSD
   BuildWinArm64                 # windows-arm64
   BuildWin7 build/"$appName"-windows7
   BuildReleaseLinuxMusl         # 9 个 musl 冷门
@@ -257,14 +257,6 @@ freebsd/amd64,freebsd/arm64,freebsd/386 .
   BuildReleaseFreeBSD
 
 
-  BuildWinArm64 build/"$appName"-windows-arm64.exe
-  BuildWin7 build/"$appName"-windows7
-  BuildLoongGLIBC build/"$appName"-linux-loong64-abi1.0 abi1.0
-  BuildLoongGLIBC build/"$appName"-linux-loong64 abi2.0
-
-  BuildReleaseLinuxMusl
-  BuildReleaseLinuxMuslArm
-  BuildReleaseAndroid
 }
 
 case "$1" in
