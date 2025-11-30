@@ -62,14 +62,14 @@ BuildLoongGLIBC() {
     gh_curl -fsSL --retry 3 \
       "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250821/go${oldWorldGoVersion}.linux-amd64.tar.gz" \
       -o go-loong64-abi1.0.tar.gz
-    rm -rf go-loong64-abi1.0 && mkdir goormais-loong64-abi1.0
+    rm -rf go-loong64-abi1.0 && mkdir go-loong64-abi1.0          # 修复这里！
     tar -xzf go-loong64-abi1.0.tar.gz -C go-loong64-abi1.0 --strip-components=1
     rm go-loong64-abi1.0.tar.gz
 
     gh_curl -fsSL --retry 3 \
       "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250722/loongson-gnu-toolchain-8.3.novec-x86_64-loongarch64-linux-gnu-rc1.1.tar.xz" \
       -o gcc8-loong64-abi1.0.tar.xz
-    rm -rf gcc8-loong64-abi1.0 && mkdir gcc8-loong64-abi1.0
+    rm -rf gcc8-loong64-abi1.0 && mkdir gcc8-loong64-abi1.0      # 这里也保险起见写全
     tar -Jxf gcc8-loong64-abi1.0.tar.xz -C gcc8-loong64-abi1.0 --strip-components=1
     rm gcc8-loong64-abi1.0.tar.xz
 
