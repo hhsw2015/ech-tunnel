@@ -190,7 +190,11 @@ BuildWin7() {
 }
 
 BuildReleaseFreeBSD() {
-  ver=$(eval "curl -fsSL --max-time 2 $GITHUB_TOKEN \"https://api.github.com/repos/freebsd/freebsd-src/tags\"" | \
+  rm -rf .git/
+  mkdir -p "build/freebsd"
+  
+  # Get latest FreeBSD 14.x release version from GitHub 
+  freebsd_version=$(eval "curl -fsSL --max-time 2 $GITHUB_TOKEN \"https://api.github.com/repos/freebsd/freebsd-src/tags\"" | \
     jq -r '.[].name' | \
     grep '^release/14\.' | \
     grep -v -- '-p[0-9]*$' | \
@@ -198,26 +202,31 @@ BuildReleaseFreeBSD() {
     tail -1 | \
     sed 's/release\///' | \
     sed 's/\.0$//')
-    
-  [ -z "$ver" ] && ver="14.3"
-  echo "Using FreeBSD $ver"
+  
+  if [ -z "$freebsd_version" ]; then
+    echo "Failed to get FreeBSD version, falling back to 14.3"
+    freebsd_version="14.3"
+  fi
 
-  for arch in amd64 arm64 i386; do
-    sudo mkdir -p "/opt/freebsd/$arch"
-    wget -q "https://download.freebsd.org/releases/$arch/$ver-RELEASE/base.txz"
-    sudo tar -xf base.txz -C "/opt/freebsd/$arch"
+  echo "Using FreeBSD version: $freebsd_version"
+  
+  OS_ARCHES=(amd64 arm64 i386)
+  GO_ARCHES=(amd64 arm64 386)
+  CGO_ARGS=(x86_64-unknown-freebsd${freebsd_version} aarch64-unknown-freebsd${freebsd_version} i386-unknown-freebsd${freebsd_version})
+  for i in "${!OS_ARCHES[@]}"; do
+    os_arch=${OS_ARCHES[$i]}
+    cgo_cc="clang --target=${CGO_ARGS[$i]} --sysroot=/opt/freebsd/${os_arch}"
+    echo building for freebsd-${os_arch}
+    sudo mkdir -p "/opt/freebsd/${os_arch}"
+    wget -q https://download.freebsd.org/releases/${os_arch}/${freebsd_version}-RELEASE/base.txz
+    sudo tar -xf ./base.txz -C /opt/freebsd/${os_arch}
     rm base.txz
-
-    local target triple
-    case "$arch" in
-      amd64)  triple="x86_64-unknown-freebsd$ver" ;;
-      arm64)  triple="aarch64-unknown-freebsd$ver" ;;
-      i386)   triple="i386-unknown-freebsd$ver" ;;
-    esac
-
-    GOOS=freebsd GOARCH=$(echo "$arch" | sed 's/amd64/amd64/;s/i386/386/;s/arm64/arm64/') \
-      CC="clang --target=$triple --sysroot=/opt/freebsd/$arch" CGO_ENABLED=1 CGO_LDFLAGS="-fuse-ld=lld" \
-      go build -o "build/$appName-freebsd-$arch" -ldflags="$ldflags" .
+    export GOOS=freebsd
+    export GOARCH=${GO_ARCHES[$i]}
+    export CC=${cgo_cc}
+    export CGO_ENABLED=1
+    export CGO_LDFLAGS="-fuse-ld=lld"
+    go build -o ./build/$appName-freebsd-$os_arch -ldflags="$ldflags" .
   done
 }
 
