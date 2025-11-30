@@ -160,40 +160,25 @@ MakeRelease() {
   fi
   
   for i in $(find . -type f -name "$appName-linux-*"); do
-    cp "$i" "$appName"
-    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
-    rm -f "$appName"
+    tar -czvf compress/"$i".tar.gz "$i"
   done
-    for i in $(find . -type f -name "$appName-android-*"); do
-    cp "$i" "$appName"
-    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
-    rm -f "$appName"
+  for i in $(find . -type f -name "$appName-android-*"); do
+    tar -czvf compress/"$i".tar.gz "$i"
   done
   for i in $(find . -type f -name "$appName-darwin-*"); do
-    cp "$i" "$appName"
-    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
-    rm -f "$appName"
+    tar -czvf compress/"$i".tar.gz "$i"
   done
   for i in $(find . -type f -name "$appName-freebsd-*"); do
-    cp "$i" "$appName"
-    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
-    rm -f "$appName"
+    tar -czvf compress/"$i".tar.gz "$i"
   done
   for i in $(find . -type f \( -name "$appName-windows-*" -o -name "$appName-windows7-*" \)); do
-    cp "$i" "$appName".exe
-    zip compress/$(echo $i | sed 's/\.[^.]*$//')$liteSuffix.zip "$appName".exe
-    rm -f "$appName".exe
+    zip compress/$(echo $i | sed 's/\.[^.]*$//').zip "$i"
   done
+  
   cd compress
+  sha256sum * > SHA256SUMS.txt
+  echo "ech-tunnel 全平台构建完成！共 $(ls -1 | grep -E '\.(tar\.gz|zip)$' | wc -l) 个文件"
   
-  # Handle MD5 filename - add -lite suffix only if not already present
-  md5FileName="$1"
-  if [ "$useLite" = true ] && [[ "$1" != *"-lite.txt" ]]; then
-    md5FileName=$(echo "$1" | sed 's/\.txt$/-lite.txt/')
-  fi
-  
-  find . -type f -print0 | xargs -0 md5sum >"$md5FileName"
-  cat "$md5FileName"
   cd ../..
 }
 
