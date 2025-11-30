@@ -12,7 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  # 第一步：创建 Release 并获取 ID（修复 id 问题）
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -25,28 +24,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
-          # 创建 Release（已存在则更新）
           RELEASE_ID=$(gh release view "$VERSION" --json id --jq .id 2>/dev/null || echo "")
           if [ -z "$RELEASE_ID" ]; then
             gh release create "$VERSION" \
               --title "$VERSION" \
               --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              --generate-notes
+              --prerelease
             RELEASE_ID=$(gh release view "$VERSION" --json id --jq .id)
           fi
           echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
           echo "Release ID: $RELEASE_ID"
 
-      # 可选：标记为 prerelease（现在 id 是纯数字）
-      - name: Mark as Prerelease (optional)
-        if: always()
-        uses: irongut/EditRelease@v1.2.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          id: ${{ steps.create.outputs.release_id }}  # 现在是纯数字 ID
-          prerelease: true
-
-  # 主力编译任务（5 个并行 job，依赖 create-release）
   build:
     needs: create-release
     runs-on: ubuntu-latest
@@ -65,7 +53,7 @@ jobs:
           - target-platform: linux_musl_all
             name: Linux musl (all cold arches: mips/loong64/riscv64...)
     name: Build ${{ matrix.name }}
-    
+
     steps:
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
@@ -90,7 +78,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt update -qq
-          sudo apt install -y upx-ucl wget unzip jq  # 加 jq 用于 JSON 解析
+          sudo apt install -y upx-ucl wget unzip jq
           docker pull crazymax/xgo:latest
           go install github.com/crazy-max/xgo@latest
 
@@ -105,14 +93,12 @@ jobs:
             linux_musl_all)  bash build.sh release linux_musl_all ;;
           esac
 
-      - name: Upload assets (自动覆盖已存在文件)
+      - name: Upload assets (强制覆盖)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ inputs.version }}"
-          # 上传所有文件，--clobber 强制覆盖
           cd build/compress
           for file in *; do
-            [[ -f "$file" ]] && gh release upload "$VERSION" "$file" --clobber
+            [[ -f "$file" ]] && gh release upload "${{ inputs.version }}" "$file" --clobber
           done
-          echo "Assets uploaded with overwrite!"
+          echo "All assets uploaded (overwrite mode)"
