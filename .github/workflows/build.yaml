@@ -16,52 +16,27 @@ permissions:
 
 jobs:
 
-  # 2. 主力编译任务（完全模仿 OpenList 的 matrix 写法）
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # 我们不需要 lite 版，所以 build-type 固定
-        build-type: [standard]
-        target-platform: ['', 'android', 'freebsd', 'linux_musl', 'linux_musl_all']
-    # 名字和 OpenList 一样好看
-    name: Release ${{ matrix.target-platform && format('{0} ', matrix.target-platform) || '' }}${{ matrix.build-type == 'lite' && 'Lite' || 'Standard' }}
+    permissions:
+      contents: write
 
     steps:
-      - name: Free Disk Space
-        if: matrix.target-platform == ''
-        uses: jlumbroso/free-disk-space@main
-        with:
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.25'
 
-      - name: Install dependencies
-        if: matrix.target-platform == ''
-        run: |
-          sudo apt update -qq
-          sudo apt install -y upx-ucl wget unzip jq
-          docker pull crazymax/xgo:latest
-          go install github.com/crazy-max/xgo@latest
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl wget unzip
 
-      - name: Build
+      - name: Build all platforms
         run: |
           chmod +x build.sh
-          bash build.sh release ${{ matrix.target-platform }}
-
+          bash build.sh release
       # 关键：上传 + 自动覆盖（--clobber）
       - name: Upload assets (overwrite existing)
         env:
@@ -73,3 +48,4 @@ jobs:
             [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
           echo "Uploaded and overwrote assets for $TAG"
+
