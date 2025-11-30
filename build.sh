@@ -107,20 +107,157 @@ BuildAndroid() {
   "${NDK}/llvm-strip" build/${appName}-android-*
 }
 
-# ========================================
-# 5. 可选：loong64 glibc 双 ABI（新旧世界）
-# ========================================
 BuildLoongGLIBC() {
-  echo "=== 编译 loong64 glibc（abi2.0 默认，新世界）==="
-  # 新世界（abi2.0）直接用系统 gcc 即可
-  CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ \
-    GOOS=linux GOARCH=loong64 CGO_ENABLED=1 \
-    go build -o "build/${appName}-linux-loong64" -ldflags="$ldflags" .
-
-  # 旧世界（abi1.0）极少人用，暂时注释掉，需要再开启
-  # CC=loongarch64-unknown-linux-gnu-gcc CXX=loongarch64-unknown-linux-gnu-g++ \
-  #   GOOS=linux GOARCH=loong64 CGO_ENABLED=1 \
-  #   go build -o "build/${appName}-linux-loong64-abi1.0" -ldflags="$ldflags" .
+  local target_abi="$2"
+  local output_file="$1"
+  local oldWorldGoVersion="1.25.0"
+ 
+  if [ "$target_abi" = "abi1.0" ]; then
+    echo "building for linux-loong64-abi1.0"
+  else
+    echo "building for linux-loong64-abi2.0"
+    target_abi="abi2.0" # Default to abi2.0 if not specified
+  fi
+ 
+  # Note: No longer need global cache cleanup since ABI1.0 uses isolated cache directory
+  echo "Using optimized cache strategy: ABI1.0 has isolated cache, ABI2.0 uses standard cache"
+ 
+  if [ "$target_abi" = "abi1.0" ]; then
+    # Setup abi1.0 toolchain and patched Go compiler similar to cgo-action implementation
+    echo "Setting up Loongson old-world ABI1.0 toolchain and patched Go compiler..."
+   
+    # Download and setup patched Go compiler for old-world
+    if ! curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+      "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250821/go${oldWorldGoVersion}.linux-amd64.tar.gz" \
+      -o go-loong64-abi1.0.tar.gz; then
+      echo "Error: Failed to download patched Go compiler for old-world ABI1.0"
+      if [ -n "$GITHUB_TOKEN" ]; then
+        echo "Error output from curl:"
+        curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+          "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250821/go${oldWorldGoVersion}.linux-amd64.tar.gz" \
+          -o go-loong64-abi1.0.tar.gz || true
+      fi
+      return 1
+    fi
+   
+    rm -rf go-loong64-abi1.0
+    mkdir go-loong64-abi1.0
+    if ! tar -xzf go-loong64-abi1.0.tar.gz -C go-loong64-abi1.0 --strip-components=1; then
+      echo "Error: Failed to extract patched Go compiler"
+      return 1
+    fi
+    rm go-loong64-abi1.0.tar.gz
+   
+    # Download and setup GCC toolchain for old-world
+    if ! curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+      "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250722/loongson-gnu-toolchain-8.3.novec-x86_64-loongarch64-linux-gnu-rc1.1.tar.xz" \
+      -o gcc8-loong64-abi1.0.tar.xz; then
+      echo "Error: Failed to download GCC toolchain for old-world ABI1.0"
+      if [ -n "$GITHUB_TOKEN" ]; then
+        echo "Error output from curl:"
+        curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+          "https://github.com/loong64/loong64-abi1.0-toolchains/releases/download/20250722/loongson-gnu-toolchain-8.3.novec-x86_64-loongarch64-linux-gnu-rc1.1.tar.xz" \
+          -o gcc8-loong64-abi1.0.tar.xz || true
+      fi
+      return 1
+    fi
+   
+    rm -rf gcc8-loong64-abi1.0
+    mkdir gcc8-loong64-abi1.0
+    if ! tar -Jxf gcc8-loong64-abi1.0.tar.xz -C gcc8-loong64-abi1.0 --strip-components=1; then
+      echo "Error: Failed to extract GCC toolchain"
+      return 1
+    fi
+    rm gcc8-loong64-abi1.0.tar.xz
+   
+    # Setup separate cache directory for ABI1.0 to avoid cache pollution
+    abi1_cache_dir="$(pwd)/go-loong64-abi1.0-cache"
+    mkdir -p "$abi1_cache_dir"
+    echo "Using separate cache directory for ABI1.0: $abi1_cache_dir"
+   
+    # Use patched Go compiler for old-world build (critical for ABI1.0 compatibility)
+    echo "Building with patched Go compiler for old-world ABI1.0..."
+    echo "Using isolated cache directory: $abi1_cache_dir"
+   
+    # Use env command to set environment variables locally without affecting global environment
+    if ! env GOOS=linux GOARCH=loong64 \
+        CC="$(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-gcc" \
+        CXX="$(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-g++" \
+        CGO_ENABLED=1 \
+        GOCACHE="$abi1_cache_dir" \
+        $(pwd)/go-loong64-abi1.0/bin/go build -a -o "$output_file" -ldflags="$ldflags" .; then
+      echo "Error: Build failed with patched Go compiler"
+      echo "Attempting retry with cache cleanup..."
+      env GOCACHE="$abi1_cache_dir" $(pwd)/go-loong64-abi1.0/bin/go clean -cache
+      if ! env GOOS=linux GOARCH=loong64 \
+          CC="$(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-gcc" \
+          CXX="$(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-g++" \
+          CGO_ENABLED=1 \
+          GOCACHE="$abi1_cache_dir" \
+          $(pwd)/go-loong64-abi1.0/bin/go build -a -o "$output_file" -ldflags="$ldflags" .; then
+        echo "Error: Build failed again after cache cleanup"
+        echo "Build environment details:"
+        echo "GOOS=linux"
+        echo "GOARCH=loong64"
+        echo "CC=$(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-gcc"
+        echo "CXX=$(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-g++"
+        echo "CGO_ENABLED=1"
+        echo "GOCACHE=$abi1_cache_dir"
+        echo "Go version: $($(pwd)/go-loong64-abi1.0/bin/go version)"
+        echo "GCC version: $($(pwd)/gcc8-loong64-abi1.0/bin/loongarch64-linux-gnu-gcc --version | head -1)"
+        return 1
+      fi
+    fi
+  else
+    # Setup abi2.0 toolchain for new world glibc build
+    echo "Setting up new-world ABI2.0 toolchain..."
+    if ! curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+      "https://github.com/loong64/cross-tools/releases/download/20250507/x86_64-cross-tools-loongarch64-unknown-linux-gnu-legacy.tar.xz" \
+      -o gcc12-loong64-abi2.0.tar.xz; then
+      echo "Error: Failed to download GCC toolchain for new-world ABI2.0"
+      if [ -n "$GITHUB_TOKEN" ]; then
+        echo "Error output from curl:"
+        curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+          "https://github.com/loong64/cross-tools/releases/download/20250507/x86_64-cross-tools-loongarch64-unknown-linux-gnu-legacy.tar.xz" \
+          -o gcc12-loong64-abi2.0.tar.xz || true
+      fi
+      return 1
+    fi
+   
+    rm -rf gcc12-loong64-abi2.0
+    mkdir gcc12-loong64-abi2.0
+    if ! tar -Jxf gcc12-loong64-abi2.0.tar.xz -C gcc12-loong64-abi2.0 --strip-components=1; then
+      echo "Error: Failed to extract GCC toolchain"
+      return 1
+    fi
+    rm gcc12-loong64-abi2.0.tar.xz
+   
+    export GOOS=linux
+    export GOARCH=loong64
+    export CC=$(pwd)/gcc12-loong64-abi2.0/bin/loongarch64-unknown-linux-gnu-gcc
+    export CXX=$(pwd)/gcc12-loong64-abi2.0/bin/loongarch64-unknown-linux-gnu-g++
+    export CGO_ENABLED=1
+   
+    # Use standard Go compiler for new-world build
+    echo "Building with standard Go compiler for new-world ABI2.0..."
+    if ! go build -a -o "$output_file" -ldflags="$ldflags" .; then
+      echo "Error: Build failed with standard Go compiler"
+      echo "Attempting retry with cache cleanup..."
+      go clean -cache
+      if ! go build -a -o "$output_file" -ldflags="$ldflags" .; then
+        echo "Error: Build failed again after cache cleanup"
+        echo "Build environment details:"
+        echo "GOOS=$GOOS"
+        echo "GOARCH=$GOARCH"
+        echo "CC=$CC"
+        echo "CXX=$CXX"
+        echo "CGO_ENABLED=$CGO_ENABLED"
+        echo "Go version: $(go version)"
+        echo "GCC version: $($CC --version | head -1)"
+        return 1
+      fi
+    fi
+  fi
 }
 
 # ========================================
