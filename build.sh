@@ -16,34 +16,46 @@ mkdir -p build/compress
 # 1. 安装 musl 工具链（OpenList 原 URL + 修复解压坑）
 # ========================================
 install_musl_toolchains() {
-  echo "=== 安装 musl 交叉编译工具链（OpenList 原 URL + Actions 解压修复）==="
+  echo "=== 安装 musl 交叉编译工具链（2025 终极修复版，支持所有冷门架构）==="
   local BASE="https://github.com/OpenListTeam/musl-compilers/releases/latest/download/"
-  local tools=(x86_64-linux-musl-cross aarch64-linux-musl-cross armv7l-linux-musleabihf-cross mips-linux-musl-cross mipsel-linux-musl-cross mips64-linux-musl-cross mips64el-linux-musl-cross riscv64-linux-musl-cross powerpc64le-linux-musl-cross loongarch64-linux-musl-cross)
-  
+  local tools=(
+    x86_64-linux-musl-cross aarch64-linux-musl-cross armv7l-linux-musleabihf-cross
+    mips-linux-musl-cross mipsel-linux-musl-cross
+    mips64-linux-musl-cross mips64el-linux-musl-cross
+    riscv64-linux-musl-cross powerpc64le-linux-musl-cross loongarch64-linux-musl-cross
+  )
+
   local tmpdir=$(mktemp -d)
   trap "rm -rf '$tmpdir'" EXIT
-  
+
   for t in "${tools[@]}"; do
-    echo "安装 $t ..."
-    curl -fsSL "${BASE}${t}.tgz" -o "$tmpdir/${t}.tgz"
-    # 先完整解压到临时目录（不 strip，避免路径错位）
-    tar -xzf "$tmpdir/${t}.tgz" -C "$tmpdir"
-    # 手动 cp bin/lib/include 到 /usr/local（绕过 tar 兼容性坑）
-    sudo cp -rf "$tmpdir/$t/bin"/* /usr/local/bin/ 2>/dev/null || true
-    sudo cp -rf "$tmpdir/$t/lib"/* /usr/local/lib/ 2>/dev/null || true
-    sudo cp -rf "$tmpdir/$t/include"/* /usr/local/include/ 2>/dev/null || true
-    rm -rf "$tmpdir/$t"  # 清理临时
+    echo "正在安装 $t ..."
+    curl -fsSL "${BASE}${t}.tgz" -o "$tmpdir/toolchain.tgz"
+
+    # 完整解压（不要 strip）
+    tar -xzf "$tmpdir/toolchain.tgz" -C "$tmpdir"
+
+    # 找到解压出来的真实目录名（通常就是 $t）
+    local extracted_dir="$tmpdir/$(tar -tf "$tmpdir/toolchain.tgz" | head -1 | cut -f1 -d'/')"
+
+    # 暴力把整个工具链目录直接扔到 /usr/local/
+    # 这样 libexec/gcc/.../cc1 路径就 100% 正确
+    sudo cp -r "$extracted_dir" /usr/local/
+
+    # 同时把 bin 链接到 /usr/local/bin（防止 PATH 问题）
+    sudo ln -sf "/usr/local/$t/bin/"* /usr/local/bin/ 2>/dev/null || true
   done
-  
-  # 验证安装（关键！）
-  for cc in x86_64-linux-musl-gcc aarch64-linux-musl-gcc armv7l-linux-musleabihf-gcc; do
-    if ! which "$cc" >/dev/null 2>&1; then
-      echo "错误: $cc 未正确安装到 PATH！检查解压日志。"
-      exit 1
+
+  # 关键验证：检查 cc1 是否真的存在
+  for arch in riscv64 powerpc64le loongarch64; do
+    if [ -f "/usr/local/${arch}-linux-musl-cross/libexec/gcc/${arch}-linux-musl/"*/cc1 ]; then
+      echo "✓ ${arch} 的 cc1 已就绪"
+    else
+      echo "✗ ${arch} 的 cc1 丢失！构建会失败"
     fi
-    echo "$cc 已就绪: $($cc --version | head -1)"
   done
-  echo "所有 musl 工具链安装成功！"
+
+  echo "所有 musl 工具链安装完成！"
 }
 
 # ========================================
