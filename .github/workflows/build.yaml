@@ -1,4 +1,4 @@
-name: Go Cross Build & Release
+name: Release All Platforms
 
 on:
   workflow_dispatch:
@@ -9,67 +9,50 @@ on:
         type: string
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write                 # 必须加这行
-
-    strategy:
-      fail-fast: false
-      matrix:
-        goos: [linux, windows, darwin]
-        goarch: [amd64, arm64]
+      contents: write   # 需要创建 release 和上传 asset
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe 需要完整历史
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: '1.25'
 
-      - name: Download dependencies
-        run: go mod download
-
-      # 你的原始编译逻辑，一字未改
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+      - name: Install dependencies (upx, wget, unzip, etc.)
         run: |
-          mkdir -p build/bin
-          if [ "$GOOS" = "windows" ]; then
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
-          else
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
-          fi
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl wget unzip
 
+      # 关键一步：直接运行你本地那个超级 build.sh
+      - name: Build all platforms using build.sh
+        run: |
+          chmod +x build.sh
+          bash build.sh release   # 它会自动生成 build/ 目录和所有压缩包 + SHA256SUMS.txt
 
-      # 关键新增：每个 job 自己上传自己编译的文件！
-      - name: Upload to Release
+      # 一次性把整个 build 目录所有文件上传到 Release
+      - name: Create Release & Upload all assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
-          
-          # 第一次运行时创建 Release（后面的 job 会跳过）
-          gh release create "$VERSION" --title="$VERSION" --notes="Auto build" || true
 
-          # 上传自己生成的文件（--clobber 允许覆盖，防止重复运行报错）
-          cd build/bin
-          for file in ech-tunnel-*; do
+          # 创建 release（已经存在就跳过）
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "Automated cross-platform build · $(date +'%Y-%m-%d %H:%M') UTC" \
+            || true
+
+          # 上传 build 目录下所有文件（包含 tar.gz / zip / 裸二进制 / SHA256SUMS.txt）
+          cd build
+          for file in *; do
             [[ -f "$file" ]] && gh release upload "$VERSION" "$file" --clobber
           done
 
-      # 最后由 linux/amd64 生成并上传 SHA256（只运行一次）
-      - name: Generate & Upload SHA256
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd build/bin
-          sha256sum ech-tunnel-* > SHA256SUMS.txt
-          gh release upload "${{ inputs.version }}" SHA256SUMS.txt --clobber
-
+          echo "All platforms uploaded successfully!"
