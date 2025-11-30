@@ -6,53 +6,35 @@ on:
       version:
         description: 'Release version (e.g. v1.5.0)'
         required: true
-        type: string
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # 需要创建 release 和上传 asset
+      contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # git describe 需要完整历史
+          fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
 
-      - name: Install dependencies (upx, wget, unzip, etc.)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx-ucl wget unzip
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl wget unzip
 
-      # 关键一步：直接运行你本地那个超级 build.sh
-      - name: Build all platforms using build.sh
+      - name: Build all platforms
         run: |
           chmod +x build.sh
-          bash build.sh release   # 它会自动生成 build/ 目录和所有压缩包 + SHA256SUMS.txt
+          bash build.sh release
 
-      # 一次性把整个 build 目录所有文件上传到 Release
-      - name: Create Release & Upload all assets
+      - name: Upload Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ inputs.version }}"
-
-          # 创建 release（已经存在就跳过）
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --notes "Automated cross-platform build · $(date +'%Y-%m-%d %H:%M') UTC" \
+          gh release create "${{ inputs.version }}" build/* \
+            --title "${{ inputs.version }}" \
+            --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
             || true
-
-          # 上传 build 目录下所有文件（包含 tar.gz / zip / 裸二进制 / SHA256SUMS.txt）
-          cd build
-          for file in *; do
-            [[ -f "$file" ]] && gh release upload "$VERSION" "$file" --clobber
-          done
-
-          echo "All platforms uploaded successfully!"
