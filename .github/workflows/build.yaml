@@ -1,89 +1,96 @@
 name: Release All Platforms
 
-# 支持两种触发方式：手动触发 + 发布 release 时自动触发
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag (e.g. v1.5.0)'
+        description: 'Release tag (e.g. v1.5.0 or nightly-20251129)'
         required: true
         type: string
-  release:
-    types: [published]
 
 permissions:
   contents: write
 
 jobs:
+  # 只有真实 release published 时才把 release 标记为 prerelease
+  mark-prerelease:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark as prerelease
+        uses: irongut/EditRelease@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          id: ${{ github.event.release.id }}
+          prerelease: true
 
-  build:
+  release:
+    needs: mark-prerelease   # 手动触发时这个 job 被跳过，不影响
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        goos: [linux, windows, darwin]
-        goarch: [amd64, arm64]
-    permissions:
-      contents: write
+        build-type: [standard, lite]
+        target-platform: ['', android, freebsd, linux_musl, linux_musl_arm]
+        # 10 个组合全部都会跑
+
+    name: ${{ matrix.target-platform != '' && matrix.target-platform || 'host' }}${{ matrix.build-type == 'lite' && '-lite' || '' }}
 
     steps:
+      - name: Free Disk Space
+        if: matrix.target-platform == ''
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: '1.25.0'
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          mkdir -p build/bin
-          if [ "$GOOS" = "windows" ]; then
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
-          else
-            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
-          fi
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build/bin/ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}*
-          if-no-files-found: error
-          
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y upx-ucl wget unzip
-
-      - name: Build all platforms
+      - name: Install dependencies (only on host build)
+        if: matrix.target-platform == ''
         run: |
-          chmod +x build.sh
-          bash build.sh release
-      # 关键：上传 + 自动覆盖（--clobber）
-      - name: Upload assets (overwrite existing)
+          sudo snap install zig --classic --beta
+          docker pull crazymax/xgo:latest
+          # xgo 用来交叉编译
+          go install github.com/crazy-max/xgo@latest
+          sudo apt install -y upx
+
+      - name: Build
+        run: |
+          bash build.sh release ${{ matrix.build-type == 'lite' && 'lite' || '' }} ${{ matrix.target-platform }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 关键：上传资产，支持覆盖，手动和自动都完美工作
+      - name: Upload Release Assets (with overwrite)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name || inputs.version }}"
+          # 自动判断当前是真实 release 还是手动触发的
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.version }}"
+            # 手动触发时自动创建 tag + draft release（如果不存在）
+            gh release create "$TAG" --draft --prerelease --title "Release $TAG" --notes "Manual build" || true
+          fi
+
           cd build/compress
           for file in *; do
-            [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
+            [ -f "$file" ] && gh release upload "$TAG" "$file" --clobber || true
           done
-          echo "Uploaded and overwrote assets for $TAG"
-
-
+          echo "All assets uploaded to release: $TAG"
