@@ -18,10 +18,47 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
     permissions:
       contents: write
 
     steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p build/bin
+          if [ "$GOOS" = "windows" ]; then
+            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH}.exe ./...
+          else
+            go build -o build/bin/ech-tunnel-${GOOS}-${GOARCH} ./...
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/bin/ech-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}*
+          if-no-files-found: error
+          
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -48,4 +85,5 @@ jobs:
             [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
           echo "Uploaded and overwrote assets for $TAG"
+
 
