@@ -148,25 +148,53 @@ BuildLoongGLIBC() {
 # 6. MakeRelease（打包，OpenList 原版）
 MakeRelease() {
   cd build
-  rm -rf compress && mkdir compress
+  if [ -d compress ]; then
+    rm -rv compress
+  fi
+  mkdir compress
+  
+  # Add -lite suffix if useLite is true
+  liteSuffix=""
+  if [ "$useLite" = true ]; then
+    liteSuffix="-lite"
+  fi
+  
   for i in $(find . -type f -name "$appName-linux-*"); do
-    tar -czvf compress/"$i".tar.gz "$i"
+    cp "$i" "$appName"
+    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
+    rm -f "$appName"
   done
-  for i in $(find . -type f -name "$appName-android-*"); do
-    tar -czvf compress/"$i".tar.gz "$i"
+    for i in $(find . -type f -name "$appName-android-*"); do
+    cp "$i" "$appName"
+    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
+    rm -f "$appName"
   done
   for i in $(find . -type f -name "$appName-darwin-*"); do
-    tar -czvf compress/"$i".tar.gz "$i"
+    cp "$i" "$appName"
+    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
+    rm -f "$appName"
   done
   for i in $(find . -type f -name "$appName-freebsd-*"); do
-    tar -czvf compress/"$i".tar.gz "$i"
+    cp "$i" "$appName"
+    tar -czvf compress/"$i$liteSuffix".tar.gz "$appName"
+    rm -f "$appName"
   done
-  for i in $(find . -type f -name "$appName-windows-*.exe"); do
-    zip compress/$(echo $i | sed 's/\.[^.]*$//').zip "$i"
+  for i in $(find . -type f \( -name "$appName-windows-*" -o -name "$appName-windows7-*" \)); do
+    cp "$i" "$appName".exe
+    zip compress/$(echo $i | sed 's/\.[^.]*$//')$liteSuffix.zip "$appName".exe
+    rm -f "$appName".exe
   done
   cd compress
-  sha256sum * > SHA256SUMS.txt
-  echo "ech-tunnel 全平台构建完成！共 $(ls -1 | grep -E '\.(tar\.gz|zip)$' | wc -l) 个文件"
+  
+  # Handle MD5 filename - add -lite suffix only if not already present
+  md5FileName="$1"
+  if [ "$useLite" = true ] && [[ "$1" != *"-lite.txt" ]]; then
+    md5FileName=$(echo "$1" | sed 's/\.txt$/-lite.txt/')
+  fi
+  
+  find . -type f -print0 | xargs -0 md5sum >"$md5FileName"
+  cat "$md5FileName"
+  cd ../..
 }
 
 BuildWin7() {
@@ -191,7 +219,6 @@ BuildWin7() {
 
 BuildReleaseFreeBSD() {
   sudo apt-get install -y clang lld
-  rm -rf .git/
   mkdir -p "build/freebsd"
   
   # Get latest FreeBSD 14.x release version from GitHub 
@@ -242,9 +269,11 @@ BuildRelease() {
   docker pull crazymax/xgo:latest
   go install github.com/crazy-max/xgo@latest
   xgo -out "$appName" -ldflags="$ldflags" \
-    -targets=windows/amd64,windows/386,darwin/amd64,darwin/arm64,\
-linux/amd64,linux/386,linux/arm64,linux/arm-7,linux/arm-6,linux/arm-5,linux/s390x,\
-freebsd/amd64,freebsd/arm64,freebsd/386 .
+    -targets=windows/amd64,windows/386,\
+           darwin/amd64,darwin/arm64,\
+           linux/amd64,linux/386,linux/arm64,linux/arm-7,linux/arm-6,linux/arm-5,\
+           linux/ppc64le,linux/riscv64,linux/s390x,\
+           freebsd/amd64,freebsd/arm64,freebsd/386 .
 
   mv "$appName"-* build/
   BuildWinArm64                 # windows-arm64
