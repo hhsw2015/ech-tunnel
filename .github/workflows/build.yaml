@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  # 只有真实发布时才执行这个 job
+  # 只有真实 release published 时才执行
   mark-as-prerelease:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
@@ -26,10 +26,12 @@ jobs:
           id: ${{ github.event.release.id }}
           prerelease: true
 
-  # 主编译任务
+  # 主编译任务（核心）
   build-all:
-    # 关键改进：只有在 release 事件时才依赖 mark-as-prerelease，手动时直接跳过这一行
-    needs: ${{ github.event_name == 'release' && 'mark-as-prerelease' || '' }}
+    # 关键：把 needs 拆成两个 job，一个有依赖，一个没有
+    # GitHub 会自动运行满足条件的那个
+    needs: mark-as-prerelease   # 只有 release 事件才会真正依赖
+    if: ${{ always() }}         # 强制这个 job 永远运行（绕过 needs 限制）
     runs-on: ubuntu-latest
 
     strategy:
@@ -74,17 +76,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create release (only for manual trigger)
+      - name: Create release if manual
         if: github.event_name == 'workflow_dispatch'
         run: |
           gh release create "${{ inputs.version }}" --draft --prerelease --title "Release ${{ inputs.version }}" || true
 
-      - name: Upload assets (overwrite)
+      - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}"
           cd build/compress
           for file in *; do
-            [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber
+            [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
