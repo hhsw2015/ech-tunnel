@@ -1,5 +1,6 @@
 name: Release All Platforms
 
+# 支持两种触发方式：手动触发 + 发布 release 时自动触发
 on:
   workflow_dispatch:
     inputs:
@@ -14,37 +15,16 @@ permissions:
   contents: write
 
 jobs:
-  # 直接创建一个永远会运行的 job，负责创建/更新 release（手动触发和自动触发都走这里）
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-    steps:
-      - name: Determine tag & create release
-        id: tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.release.tag_name || inputs.version }}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-          # 如果是手动触发且 release 不存在，则创建
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            gh release view "$TAG" >/dev/null 2>&1 || \
-              gh release create "$TAG" \
-                --title "$TAG" \
-                --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
-                --prerelease
-          fi
-
-  # 主编译任务（100% 不会被 skip）
+  # 2. 主力编译任务（完全模仿 OpenList 的 matrix 写法）
   build:
-    needs: create-release
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # 我们不需要 lite 版，所以 build-type 固定
         build-type: [standard]
         target-platform: ['', 'android', 'freebsd', 'linux_musl', 'linux_musl_all']
+    # 名字和 OpenList 一样好看
     name: Release ${{ matrix.target-platform && format('{0} ', matrix.target-platform) || '' }}${{ matrix.build-type == 'lite' && 'Lite' || 'Standard' }}
 
     steps:
@@ -54,6 +34,7 @@ jobs:
         with:
           android: true
           dotnet: true
+          haskell: true
           large-packages: true
           docker-images: true
           swap-storage: true
@@ -81,13 +62,14 @@ jobs:
           chmod +x build.sh
           bash build.sh release ${{ matrix.target-platform }}
 
-      - name: Upload assets (强制覆盖)
+      # 关键：上传 + 自动覆盖（--clobber）
+      - name: Upload assets (overwrite existing)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ needs.create-release.outputs.tag }}"
+          TAG="${{ github.event.release.tag_name || inputs.version }}"
           cd build/compress
           for file in *; do
             [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
-          echo "All assets uploaded/overwritten for $TAG"
+          echo "Uploaded and overwrote assets for $TAG"
