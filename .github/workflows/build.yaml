@@ -1,61 +1,49 @@
 name: Release All Platforms
 
+# 支持两种触发方式：手动触发 + 发布 release 时自动触发
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v1.5.0)'
+        description: 'Release tag (e.g. v1.5.0)'
         required: true
         type: string
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
-    name: Create Release
+  # 1. 先把 release 标记为 Prerelease（OpenList 官方就是这么干的）
+  prerelease:
+    name: Set Prerelease
     runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.create.outputs.release_id }}
+    # 手动触发时 github.event.release.id 不存在，所以要判断
+    if: github.event_name == 'release'
     steps:
-      - name: Create or update release
-        id: create
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          RELEASE_ID=$(gh release view "$VERSION" --json id --jq .id 2>/dev/null || echo "")
-          if [ -z "$RELEASE_ID" ]; then
-            gh release create "$VERSION" \
-              --title "$VERSION" \
-              --notes "Automated full-platform build $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              --prerelease
-            RELEASE_ID=$(gh release view "$VERSION" --json id --jq .id)
-          fi
-          echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
-          echo "Release ID: $RELEASE_ID"
+      - name: Mark as Prerelease
+        uses: irongut/EditRelease@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          id: ${{ github.event.release.id }}
+          prerelease: true
 
+  # 2. 主力编译任务（完全模仿 OpenList 的 matrix 写法）
   build:
-    needs: create-release
+    needs: prerelease
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target-platform: [ '', 'android', 'freebsd', 'linux_musl', 'linux_musl_all' ]
-        include:
-          - target-platform: ''
-            name: Standard (xgo + windows-arm64)
-          - target-platform: android
-            name: Android
-          - target-platform: freebsd
-            name: FreeBSD
-          - target-platform: linux_musl
-            name: Linux musl (common arches)
-          - target-platform: linux_musl_all
-            name: Linux musl (all cold arches: mips/loong64/riscv64...)
-    name: Build ${{ matrix.name }}
+        # 我们不需要 lite 版，所以 build-type 固定
+        build-type: [standard]
+        target-platform: ['', 'android', 'freebsd', 'linux_musl', 'linux_musl_all']
+    # 名字和 OpenList 一样好看
+    name: Release ${{ matrix.target-platform && format('{0} ', matrix.target-platform) || '' }}${{ matrix.build-type == 'lite' && 'Lite' || 'Standard' }}
 
     steps:
       - name: Free Disk Space
+        if: matrix.target-platform == ''
         uses: jlumbroso/free-disk-space@main
         with:
           android: true
@@ -75,30 +63,27 @@ jobs:
         with:
           go-version: '1.25.0'
 
-      - name: Install tools
+      - name: Install dependencies
+        if: matrix.target-platform == ''
         run: |
           sudo apt update -qq
           sudo apt install -y upx-ucl wget unzip jq
           docker pull crazymax/xgo:latest
           go install github.com/crazy-max/xgo@latest
 
-      - name: Build ${{ matrix.name }}
+      - name: Build
         run: |
           chmod +x build.sh
-          case "${{ matrix.target-platform }}" in
-            "")              bash build.sh release ;;
-            android)         bash build.sh release android ;;
-            freebsd)         bash build.sh release freebsd ;;
-            linux_musl)      bash build.sh release linux_musl ;;
-            linux_musl_all)  bash build.sh release linux_musl_all ;;
-          esac
+          bash build.sh release ${{ matrix.target-platform }}
 
-      - name: Upload assets (强制覆盖)
+      # 关键：上传 + 自动覆盖（--clobber）
+      - name: Upload assets (overwrite existing)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TAG="${{ github.event.release.tag_name || inputs.version }}"
           cd build/compress
           for file in *; do
-            [[ -f "$file" ]] && gh release upload "${{ inputs.version }}" "$file" --clobber
+            [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
-          echo "All assets uploaded (overwrite mode)"
+          echo "Uploaded and overwrote assets for $TAG"
