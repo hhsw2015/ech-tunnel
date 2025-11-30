@@ -247,7 +247,7 @@ BuildReleaseFreeBSD() {
 # 主入口：直接调用 OpenList 的 release 逻辑（只多打几个）
 # ========================================
 BuildRelease() {
-  rm -rf build .git
+  rm -rf build
   mkdir -p build
 
   # 1. xgo 打主流 + FreeBSD + armv5 + s390x
