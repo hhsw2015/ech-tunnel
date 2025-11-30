@@ -14,48 +14,45 @@ permissions:
   contents: write
 
 jobs:
-  # 只有真实 release published 时才执行
-  mark-as-prerelease:
-    if: github.event_name == 'release'
+  # Set release to prerelease first
+  prerelease:
+    name: Set Prerelease
     runs-on: ubuntu-latest
     steps:
-      - name: Mark as prerelease
+      - name: Prerelease
         uses: irongut/EditRelease@v1.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           id: ${{ github.event.release.id }}
           prerelease: true
 
-  # 主编译任务（核心）
-  build-all:
-    # 关键：把 needs 拆成两个 job，一个有依赖，一个没有
-    # GitHub 会自动运行满足条件的那个
-    needs: mark-as-prerelease   # 只有 release 事件才会真正依赖
-    if: ${{ always() }}         # 强制这个 job 永远运行（绕过 needs 限制）
-    runs-on: ubuntu-latest
-
+  # Main release job for all platforms
+  release:
+    needs: prerelease
     strategy:
       matrix:
-        build-type: [standard, lite]
-        target-platform: ['', android, freebsd, linux_musl, linux_musl_arm]
-
-    name: ${{ matrix.target-platform || 'host' }}${{ matrix.build-type == 'lite' && '-lite' || '' }}
-
+        build-type: [ 'standard', 'lite' ]
+        target-platform: [ '', 'android', 'freebsd', 'linux_musl', 'linux_musl_arm' ]
+    name: Release ${{ matrix.target-platform && format('{0} ', matrix.target-platform) || '' }}${{ matrix.build-type == 'lite' && 'Lite' || '' }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Free Disk Space
+
+      - name: Free Disk Space (Ubuntu)
         if: matrix.target-platform == ''
         uses: jlumbroso/free-disk-space@main
         with:
+          tool-cache: false
           android: true
           dotnet: true
           haskell: true
           large-packages: true
           docker-images: true
+          swap-storage: true
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.25.0'
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,14 +65,15 @@ jobs:
           sudo snap install zig --classic --beta
           docker pull crazymax/xgo:latest
           go install github.com/crazy-max/xgo@latest
-          sudo apt-get update && sudo apt-get install -y upx
+          sudo apt install upx
 
       - name: Build
         run: |
           bash build.sh release ${{ matrix.build-type == 'lite' && 'lite' || '' }} ${{ matrix.target-platform }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
+          
       - name: Create release if manual
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -90,3 +88,4 @@ jobs:
           for file in *; do
             [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
+
