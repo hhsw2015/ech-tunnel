@@ -232,11 +232,11 @@ freebsd/amd64,freebsd/arm64,freebsd/386 .
   mv "$appName"-* build/
   BuildWinArm64                 # windows-arm64
   BuildWin7 build/"$appName"-windows7
+  BuildLoongGLIBC "build/$appName-linux-loong64-abi1.0" abi1.0
+  BuildLoongGLIBC "build/$appName-linux-loong64" abi2.0
   BuildReleaseLinuxMusl         # 9 个 musl 冷门
   BuildReleaseLinuxMuslArm      # 11 个极端 arm
   BuildReleaseAndroid           # Android 四件套
-  BuildLoongGLIBC "build/$appName-linux-loong64-abi1.0" abi1.0
-  BuildLoongGLIBC "build/$appName-linux-loong64" abi2.0
   BuildReleaseFreeBSD
 
 }
