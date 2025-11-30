@@ -269,27 +269,7 @@ BuildRelease() {
   docker pull crazymax/xgo:latest
   go install github.com/crazy-max/xgo@latest
   xgo -out "$appName" -ldflags="$ldflags" \
-    -targets=\
-      windows/amd64,\
-      windows/386,\
-      darwin/amd64,\
-      darwin/arm64,\
-      linux/amd64,\
-      linux/386,\
-      linux/arm64,\
-      linux/arm-7,\
-      linux/arm-6,\
-      linux/arm-5,\
-      linux/ppc64le,\
-      linux/riscv64,\
-      linux/s390x,\
-      linux/mips,\
-      linux/mipsle,\
-      linux/mips64,\
-      linux/mips64le,\
-      freebsd/amd64,\
-      freebsd/arm64,\
-      freebsd/386 ech-tunnel
+    -targets=windows/amd64,windows/386,darwin/amd64,darwin/arm64,linux/amd64,linux/386,linux/arm64,linux/arm-7,linux/arm-6,linux/arm-5,linux/ppc64le,linux/riscv64,linux/s390x,linux/mips,linux/mipsle,linux/mips64,linux/mips64le,freebsd/amd64,freebsd/arm64,freebsd/386 .
 
   mv "$appName"-* build/
   BuildWinArm64                 # windows-arm64
