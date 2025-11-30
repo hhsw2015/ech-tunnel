@@ -6,7 +6,7 @@ builtAt="$(date +'%F %T %z')"
 gitCommit=$(git log --pretty=format:"%h" -1)
 
 # 自动取最新 tag 没有 tag 就用 v0.0.0
-version=$(git describe --abbrev=0 --tags 2>/dev/null || echo "v0.0.0")
+version=$(git describe --abbrev=0 --tags 2>/dev/null || echo "v1.0")
 
 ldflags="\
 -w -s \
