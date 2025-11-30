@@ -47,8 +47,6 @@ jobs:
           docker pull crazymax/xgo:latest
           go install github.com/crazy-max/xgo@latest
           sudo apt install upx
-          sudo apt-get install -y clang lld
-
 
       - name: Build
         run: |
@@ -71,6 +69,7 @@ jobs:
           for file in *; do
             [[ -f "$file" ]] && gh release upload "$TAG" "$file" --clobber || true
           done
+
 
 
 
